@@ -16,8 +16,43 @@ from dotenv import load_dotenv
 import asyncio
 import sqlite3
 from pathlib import Path
+import logging
 
 load_dotenv()
+
+# FIXME Skeniraj parove:
+# USDⓈ-M: GET /fapi/v1/exchangeInfo
+#
+# COIN-M: GET /dapi/v1/exchangeInfo
+#
+# Izvuci symbols i filtere (LOT_SIZE, PRICE_FILTER).
+#
+# Postavi amount:
+# Koristi minQty, maxQty, stepSize za validaciju.
+#
+# Za COIN-M, prilagodi amount prema contractSize.
+#
+# Postavi leverage:
+# Popravi set_leverage sa await i symbol.
+#
+# Proveri max leverage iz exchangeInfo.
+#
+# Websocket (COIN-M):
+# Od 25.02.2025, koristi wss://ws-dapi.binance.com/ws-dapi/v1 za naloge.   JA TREBAM "dapi" !!!!
+#
+# Implementiraj odvojene stream-ove za market podatke i naloge.
+#
+# Testiranje:
+# Testiraj na testnetu (testnet.binancefuture.com) pre produkcije.
+#
+# Loguj sve API pozive (DEBUG nivo već imaš uključen).
+#
+# 7. Dodatni saveti
+# Insurance Balance: Ako koristiš GET /fapi/v1/insuranceBalance, proveri raspoloživost fondova za margin trading.
+#
+# Rate Limits: Poštuj ograničenja (REQUEST_WEIGHT: 2400/min, ORDERS: 1200/min). Dodaj sleep ili retry logiku ako prelaziš.
+#
+# Error Handling: Obradi greške kao Failed to set leverage u kodu.
 
 # DB setup
 DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
@@ -68,28 +103,6 @@ def log_score(score):
         cursor.execute("INSERT INTO score_log (timestamp, score) VALUES (?, ?)", (now, score))
         conn.commit()
 
-def log_candidate(symbol, price, score):
-    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-        cursor = conn.cursor()
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO candidates (timestamp, symbol, price, score) VALUES (?, ?, ?, ?)", (now, symbol, price, score))
-        conn.commit()
-    export_candidates_to_json()
-
-def export_candidates_to_json():
-    try:
-        log_action("Exporting candidates to JSON...")
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT timestamp, symbol, price, score FROM candidates ORDER BY id DESC LIMIT 10")
-            candidates = [{"time": t, "symbol": s, "price": p, "score": sc} for t, s, p, sc in cursor.fetchall()]
-            json_path = DB_PATH.parent / "candidates.json"
-            log_action(f"Writing candidates to {json_path}")
-            with open(json_path, "w") as f:
-                json.dump(candidates, f, indent=2)
-            log_action("Candidates exported to JSON successfully.")
-    except Exception as e:
-        log_action(f"Error exporting candidates to JSON: {e}")
 
 def log_action(message):
     with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
@@ -121,12 +134,23 @@ class ChovusSmartBot:
             'enableRateLimit': True,
             'options': {'defaultType': 'future'}
         })
+        self.exchange.load_markets()
+        self.exchange.fetch_balance
         if get_config("balance") is None:
-            set_config("balance", "1000.0")
+            set_config("balance", "99.0")
         if get_config("score") is None:
             set_config("score", "0")
         if get_config("report_time") is None:
             set_config("report_time", "09:00")
+
+# FIXME async def connect_websocket(self):
+    #     ws = await exchange.watch_ticker('ETHBTC')
+    #     async for msg in ws:
+    #         logger.debug(f"Received ticker: {msg}")
+
+    # TODO Websocket API je odvojen od market data stream-a, pa za cene koristi wss://dapi.binance.com/dapi/v1 (za COIN-M) ili wss://fstream.binance.com (za USDⓈ-M).
+
+
 
     async def start_bot(self):
         if self.running:
@@ -134,6 +158,12 @@ class ChovusSmartBot:
             return
         log_action("Bot starting...")
         self.running = True
+        try:
+            await self.set_leverage(self.leverage)  # Osiguraj da je set_leverage await-ovan
+        except Exception as e:
+            log_action(f"Error setting leverage in start_bot: {str(e)}")
+            self.running = False
+            raise
         self._bot_task = asyncio.create_task(self._main_bot_loop())
         if self._telegram_report_thread is None or not self._telegram_report_thread.is_alive():
             self._telegram_report_thread = threading.Thread(target=self._send_report_loop, daemon=True)
@@ -155,13 +185,28 @@ class ChovusSmartBot:
         log_action(f"Strategy set to: {strategy_name}")
         return strategy_name
 
-    def set_leverage(self, leverage: int):
-        self.leverage = leverage
-        log_action(f"Leverage set to: {leverage}x")
+    # FIXME Ograničenja: Leverage zavisi od para i pravila Binance-a. Proveri leverage polje u /fapi/v1/exchangeInfo
+    #  ili /dapi/v1/exchangeInfo za maksimalni dozvoljeni leverage (npr. za BTCUSD_PERP, proveri maintMarginPercent i requiredMarginPercent).
+
+    async def set_leverage(self, symbol, leverage):
         try:
-            self.exchange.set_leverage(leverage, symbol=None)
+            response = await self.exchange.set_leverage(leverage, symbol)
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
         except Exception as e:
-            log_action(f"Error setting leverage: {e}")
+            logger.error(f"Failed to set leverage for {symbol}: {e}")
+
+
+
+            # FIXME symbol_info = exchange.fetch_markets()  # Molim te dodaj ovo gde je potrebno
+            # for symbol in symbol_info:
+            #     lot_size = next(filter(lambda x: x['type'] == 'LOT_SIZE', symbol['filters']))
+            #     min_qty, max_qty, step_size = lot_size['minQty'], lot_size['maxQty'], lot_size['stepSize']
+            #     # Postavi amount u skladu sa stepSize
+
+            # TODO Ispravno rukovanje asinhronim pozivima (await za set_leverage i slične). Validaciju amount-a prema LOT_SIZE i contractSize. ZA LEVERAGE, koliki je tvoj max amount u odnou na leverage
+
+
+
 
     def set_manual_amount(self, amount: float):
         self.manual_amount = amount
@@ -169,7 +214,7 @@ class ChovusSmartBot:
 
     def smart_allocation(self, score):
         if self.manual_amount > 0:
-            return self.manual_amount / float(get_config("balance", "1000"))
+            return self.manual_amount / float(get_config("balance", "99"))
         if score > 0.9:
             return 0.5
         elif score > 0.8:
@@ -178,6 +223,35 @@ class ChovusSmartBot:
             return 0.2
         else:
             return 0.1
+
+    def log_candidate(self, symbol, price, score):
+        try:
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                now = time.strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute("INSERT INTO candidates (timestamp, symbol, price, score) VALUES (?, ?, ?, ?)",
+                              (now, symbol, price, score))
+                conn.commit()
+                log_action(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+            self.export_candidates_to_json()
+        except Exception as e:
+            log_action(f"Error in log_candidate: {str(e)}")
+
+    def export_candidates_to_json(self):
+        try:
+            log_action("Exporting candidates to JSON...")
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT timestamp, symbol, price, score FROM candidates ORDER BY id DESC LIMIT 10")
+                candidates = [{"time": t, "symbol": s, "price": p, "score": sc} for t, s, p, sc in cursor.fetchall()]
+                json_path = Path(DB_PATH).parent / "candidates.json"
+                log_action(f"Writing candidates to {json_path}")
+                with open(json_path, "w") as f:
+                    json.dump(candidates, f, indent=2)
+                log_action("Candidates exported to JSON successfully.")
+        except Exception as e:
+            log_action(f"Error exporting candidates to JSON: {e}")
+
 
     async def learn_from_history(self):
         try:
@@ -240,34 +314,76 @@ class ChovusSmartBot:
         if in_fib_zone: score += 0.5
         return min(score / 4.0, 1.0)
 
-    async def _scan_pairs(self, limit=5):
-        markets = await self.exchange.load_markets()
-        pairs = []
-        all_futures = [s for s in markets if s.endswith("/USDT") and markets[s].get('future', False)]
-        tickers = await self.exchange.fetch_tickers(all_futures)
-        for symbol in all_futures:
-            ticker = tickers.get(symbol)
-            if not ticker: continue
+    # FIXME . Skeniranje svih futures parova
+    # USDⓈ-M Futures
+    # API: Koristiš GET /fapi/v1/exchangeInfo za dobijanje svih parova. Ovo vraća listu simbola sa detaljima (npr. pricePrecision, quantityPrecision, filters).
+    #
+    # Primjer iz logova: ETHBTC par, sa podacima o ceni (lastPrice: 0.024285), volume (35709.71), i kretanju (priceChangePercent: -2.755%).
+    #
+    # Filteri: Važni su za amount:
+    # LOT_SIZE: minQty, maxQty, stepSize (npr. za ETHBTC, ovo se nalazi u /fapi/v1/exchangeInfo).
+    #
+    # PERCENT_PRICE: Ograničava cenu naloga (multiplierDown: 0.9500, multiplierUp: 1.0500).
+    #
+    # Akcija: Iteriraj kroz symbols iz /fapi/v1/exchangeInfo da dobiješ sve USDⓈ-M parove. Za svaki par, proveri minQty, maxQty, i stepSize iz LOT_SIZE filtera kako bi postavio validan amount.
+
+    async def _scan_pairs(self, limit=10):
+        log_action("Starting pair scanning...")
+        try:
+            log_action("Loading markets...")
+            markets = await self.exchange.load_markets()
+            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT")
+            all_futures = available_pairs.split(",") if available_pairs else ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+            log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
+
+            if not all_futures:
+                log_action("No pairs defined in config. Add pairs to scan.")
+                return []
+
             try:
-                volume = ticker.get('quoteVolume', 0)
-                price = ticker.get('last', 0)
-                if volume and price and price > 0:
-                    df = await self.get_candles(symbol)
-                    if len(df) < 150:
-                        log_action(f"Not enough data for {symbol}, skipping.")
-                        continue
-                    crossover = self.confirm_smma_wma_crossover(df)
-                    in_fib_zone = self.fib_zone_check(df)
-                    avg_volume = df['volume'].iloc[-50:].mean() if len(df) >= 50 else volume
-                    score = self.ai_score(price, volume, avg_volume, crossover, in_fib_zone)
-                    log_candidate(symbol, price, score)
-                    if score > 0.6:
-                        pairs.append((symbol, price, volume, score))
-                        log_action(f"Candidate found: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+                log_action("Fetching tickers...")
+                tickers = await self.exchange.fetch_tickers(all_futures)
+                log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
-                log_action(f"Error scanning {symbol}: {e}")
-        pairs.sort(key=lambda x: x[3], reverse=True)
-        return pairs[:limit]
+                log_action(f"Error fetching tickers: {str(e)}")
+                return []
+
+            pairs = []
+            for symbol in all_futures:
+                ticker = tickers.get(symbol)
+                if not ticker:
+                    log_action(f"No ticker data for {symbol}, skipping.")
+                    continue
+                try:
+                    volume = ticker.get('quoteVolume', 0)
+                    price = ticker.get('last', 0)
+                    if volume and price and price > 0:
+                        log_action(f"Fetching candles for {symbol}...")
+                        df = await self.get_candles(symbol, timeframe='1h', limit=150)
+                        if len(df) < 150:
+                            log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
+                            continue
+                        log_action(f"Calculating indicators for {symbol}...")
+                        crossover = self.confirm_smma_wma_crossover(df)
+                        in_fib_zone = self.fib_zone_check(df)
+                        avg_volume = df['volume'].iloc[-50:].mean() if len(df) >= 50 else volume
+                        score = self.ai_score(price, volume, avg_volume, crossover, in_fib_zone)
+                        log_action(
+                            f"Scanned {symbol} | Price: {price:.4f} | Volume: {volume:.2f} | Score: {score:.2f} | Crossover: {crossover} | Fib Zone: {in_fib_zone}")
+                        self.log_candidate(symbol, price, score)  # Ažurirano da koristi self
+                        if score > 0.2:
+                            pairs.append((symbol, price, volume, score))
+                            log_action(f"Candidate selected: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+                    else:
+                        log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
+                except Exception as e:
+                    log_action(f"Error scanning {symbol}: {str(e)}")
+            pairs.sort(key=lambda x: x[3], reverse=True)
+            log_action(f"Scanning complete. Selected {len(pairs)} candidates.")
+            return pairs[:limit]
+        except Exception as e:
+            log_action(f"Error in pair scanning: {str(e)}")
+            return []
 
     async def _monitor_trade(self, symbol, entry_price):
         log_action(f"Monitoring trade for {symbol} at entry {entry_price:.4f}")
@@ -371,6 +487,37 @@ class ChovusSmartBot:
             log_action(f"Error opening long position for {symbol}: {e}")
             return None, None
 
+    async def _main_bot_loop(self):
+        log_action("[BOT] Starting main bot loop...")
+        while self.running:
+            log_action("Bot loop iteration running...")
+            try:
+                log_action("Initiating pair scan...")
+                targets = await self._scan_pairs()
+                log_action(f"Found {len(targets)} high-score targets: {[t[0] for t in targets]}")
+                if targets:
+                    symbol, price, volume, score = targets[0]
+                    log_action(f"[BOT] Opening position on {symbol} with score {score:.2f}")
+                    order, entry_price = await self._open_long(symbol, score)
+                    if order:
+                        log_action(f"Position opened for {symbol} at {entry_price}")
+                        trade_outcome = await self._monitor_trade(symbol, entry_price)
+                        log_action(f"Trade for {symbol} finished with outcome: {trade_outcome}")
+                        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                            cursor = conn.cursor()
+                            now = time.strftime("%Y-%m-%d %H:%M:%S")
+                            cursor.execute("INSERT INTO trades (symbol, price, timestamp, outcome) VALUES (?, ?, ?, ?)",
+                                           (symbol, entry_price, now, trade_outcome))
+                            conn.commit()
+                    else:
+                        log_action(f"Could not open position for {symbol}.")
+                else:
+                    log_action("No high-score targets found in this scan.")
+                await self.learn_from_history()
+            except Exception as ex:
+                log_action(f"Main bot loop error: {str(ex)}")
+            await asyncio.sleep(15)
+
     def _send_telegram_message(self, message):
         token = os.getenv('TELEGRAM_BOT_TOKEN')
         chat_id = os.getenv('TELEGRAM_CHAT_ID')
@@ -397,3 +544,19 @@ class ChovusSmartBot:
         msg = f"📊 ChovusBot Report:\nWallet = {float(get_config('balance', '0')):.2f} USDT, Score = {int(get_config('score', '0'))}"
         self._send_telegram_message(msg)
         log_action(f"Daily report sent at {datetime.now().strftime('%H:%M')}")
+
+        # FIXME ovo je samo uputsvo, NIJE NEOPHODNO!!! COIN-M Futures
+        # API: GET /dapi/v1/exchangeInfo (primjer iz logova za BTCUSD_PERP).
+        #
+        # Primjer podataka:
+        # Simbol: BTCUSD_PERP
+        #
+        # contractSize: 100
+        #
+        # minQty: 1, maxQty: 1000000, stepSize: 1 (iz LOT_SIZE filtera)
+        #
+        # pricePrecision: 1, tickSize: 0.1
+        #
+        # Filteri: Slično kao USDⓈ-M, koristi LOT_SIZE za amount i PRICE_FILTER za cenu.
+        #
+        # Akcija: Skeniraj sve simbole iz /dapi/v1/exchangeInfo. Postavi amount prema contractSize i LOT_SIZE (npr. za BTCUSD_PERP, amount mora biti celobrojni umnožak od 1).
