@@ -20,6 +20,40 @@ import logging
 
 load_dotenv()
 
+# FIXME Skeniraj parove:
+# USDⓈ-M: GET /fapi/v1/exchangeInfo
+#
+# COIN-M: GET /dapi/v1/exchangeInfo
+#
+# Izvuci symbols i filtere (LOT_SIZE, PRICE_FILTER).
+#
+# Postavi amount:
+# Koristi minQty, maxQty, stepSize za validaciju.
+#
+# Za COIN-M, prilagodi amount prema contractSize.
+#
+# Postavi leverage:
+# Popravi set_leverage sa await i symbol.
+#
+# Proveri max leverage iz exchangeInfo.
+#
+# Websocket (COIN-M):
+# Od 25.02.2025, koristi wss://ws-dapi.binance.com/ws-dapi/v1 za naloge.   JA TREBAM "dapi" !!!!
+#
+# Implementiraj odvojene stream-ove za market podatke i naloge.
+#
+# Testiranje:
+# Testiraj na testnetu (testnet.binancefuture.com) pre produkcije.
+#
+# Loguj sve API pozive (DEBUG nivo već imaš uključen).
+#
+# 7. Dodatni saveti
+# Insurance Balance: Ako koristiš GET /fapi/v1/insuranceBalance, proveri raspoloživost fondova za margin trading.
+#
+# Rate Limits: Poštuj ograničenja (REQUEST_WEIGHT: 2400/min, ORDERS: 1200/min). Dodaj sleep ili retry logiku ako prelaziš.
+#
+# Error Handling: Obradi greške kao Failed to set leverage u kodu.
+
 # DB setup
 DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +143,15 @@ class ChovusSmartBot:
         if get_config("report_time") is None:
             set_config("report_time", "09:00")
 
+# FIXME async def connect_websocket(self):
+    #     ws = await exchange.watch_ticker('ETHBTC')
+    #     async for msg in ws:
+    #         logger.debug(f"Received ticker: {msg}")
+
+    # TODO Websocket API je odvojen od market data stream-a, pa za cene koristi wss://dapi.binance.com/dapi/v1 (za COIN-M) ili wss://fstream.binance.com (za USDⓈ-M).
+
+
+
     async def start_bot(self):
         if self.running:
             log_action("Bot is already running.")
@@ -142,13 +185,28 @@ class ChovusSmartBot:
         log_action(f"Strategy set to: {strategy_name}")
         return strategy_name
 
-    def set_leverage(self, leverage: int):
-        self.leverage = leverage
-        log_action(f"Leverage set to: {leverage}x")
+    # FIXME Ograničenja: Leverage zavisi od para i pravila Binance-a. Proveri leverage polje u /fapi/v1/exchangeInfo
+    #  ili /dapi/v1/exchangeInfo za maksimalni dozvoljeni leverage (npr. za BTCUSD_PERP, proveri maintMarginPercent i requiredMarginPercent).
+
+    async def set_leverage(self, symbol, leverage):
         try:
-            self.exchange.set_leverage(leverage, symbol=None)
+            response = await self.exchange.set_leverage(leverage, symbol)
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
         except Exception as e:
-            log_action(f"Error setting leverage: {e}")
+            logger.error(f"Failed to set leverage for {symbol}: {e}")
+
+
+
+            # FIXME symbol_info = exchange.fetch_markets()  # Molim te dodaj ovo gde je potrebno
+            # for symbol in symbol_info:
+            #     lot_size = next(filter(lambda x: x['type'] == 'LOT_SIZE', symbol['filters']))
+            #     min_qty, max_qty, step_size = lot_size['minQty'], lot_size['maxQty'], lot_size['stepSize']
+            #     # Postavi amount u skladu sa stepSize
+
+            # TODO Ispravno rukovanje asinhronim pozivima (await za set_leverage i slične). Validaciju amount-a prema LOT_SIZE i contractSize. ZA LEVERAGE, koliki je tvoj max amount u odnou na leverage
+
+
+
 
     def set_manual_amount(self, amount: float):
         self.manual_amount = amount
@@ -256,6 +314,22 @@ class ChovusSmartBot:
         if in_fib_zone: score += 0.5
         return min(score / 4.0, 1.0)
 
+#<<<<<<< _scan_pair
+    # FIXME . Skeniranje svih futures parova
+    # USDⓈ-M Futures
+    # API: Koristiš GET /fapi/v1/exchangeInfo za dobijanje svih parova. Ovo vraća listu simbola sa detaljima (npr. pricePrecision, quantityPrecision, filters).
+    #
+    # Primjer iz logova: ETHBTC par, sa podacima o ceni (lastPrice: 0.024285), volume (35709.71), i kretanju (priceChangePercent: -2.755%).
+    #
+    # Filteri: Važni su za amount:
+    # LOT_SIZE: minQty, maxQty, stepSize (npr. za ETHBTC, ovo se nalazi u /fapi/v1/exchangeInfo).
+    #
+    # PERCENT_PRICE: Ograničava cenu naloga (multiplierDown: 0.9500, multiplierUp: 1.0500).
+    #
+    # Akcija: Iteriraj kroz symbols iz /fapi/v1/exchangeInfo da dobiješ sve USDⓈ-M parove. Za svaki par, proveri minQty, maxQty, i stepSize iz LOT_SIZE filtera kako bi postavio validan amount.
+
+#=======
+#>>>>>>> master
     async def _scan_pairs(self, limit=10):
         log_action("Starting pair scanning...")
         try:
@@ -473,3 +547,19 @@ class ChovusSmartBot:
         msg = f"📊 ChovusBot Report:\nWallet = {float(get_config('balance', '0')):.2f} USDT, Score = {int(get_config('score', '0'))}"
         self._send_telegram_message(msg)
         log_action(f"Daily report sent at {datetime.now().strftime('%H:%M')}")
+
+        # FIXME ovo je samo uputsvo, NIJE NEOPHODNO!!! COIN-M Futures
+        # API: GET /dapi/v1/exchangeInfo (primjer iz logova za BTCUSD_PERP).
+        #
+        # Primjer podataka:
+        # Simbol: BTCUSD_PERP
+        #
+        # contractSize: 100
+        #
+        # minQty: 1, maxQty: 1000000, stepSize: 1 (iz LOT_SIZE filtera)
+        #
+        # pricePrecision: 1, tickSize: 0.1
+        #
+        # Filteri: Slično kao USDⓈ-M, koristi LOT_SIZE za amount i PRICE_FILTER za cenu.
+        #
+        # Akcija: Skeniraj sve simbole iz /dapi/v1/exchangeInfo. Postavi amount prema contractSize i LOT_SIZE (npr. za BTCUSD_PERP, amount mora biti celobrojni umnožak od 1).
