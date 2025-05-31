@@ -7,7 +7,8 @@ from ccxt.async_support import binance
 from typing import List, Tuple
 import os
 from config import get_config
-from settings import DB_PATH  # Uvozi DB_PATH iz settings.py
+from settings import DB_PATH
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +84,12 @@ class ChovusSmartBot:
                     'fapi': 'https://testnet.binancefuture.com'
                 }
             } if testnet else {
-
                 'api': {
-                    'fapi': 'https://testnet.binance.vision/sapi'
+                    'fapi': 'https://fapi.binance.com'
                 }
             }
         })
-        self.exchange.set_sandbox_mode(True)
+        self.exchange.set_sandbox_mode(True)  # Eksplicitno uključi sandbox mod
         self.running = False
         self._bot_task = None
         self.current_strategy = "default"
@@ -103,13 +103,17 @@ class ChovusSmartBot:
             exchange_info = await self.exchange.fetch_markets()
             markets = {m['symbol']: m for m in exchange_info if m['type'] == 'future' and m['quote'] == 'USDT'}
 
+            # Proveri available_pairs iz config-a, ako nije postavljen koristi default
             available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT")
-            all_futures = available_pairs.split(",") if available_pairs else ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+            if not available_pairs:
+                available_pairs = "BTC/USDT,ETH/USDT,SOL/USDT"  # Dodatni fallback
+                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,SOL/USDT")
+            all_futures = available_pairs.split(",") if available_pairs else []
             all_futures = [p for p in all_futures if p in markets]
             log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
 
             if not all_futures:
-                log_action("No valid USDⓈ-M pairs defined in config. Add pairs to scan.")
+                log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
                 return []
 
             log_action("Fetching tickers...")
@@ -229,7 +233,6 @@ class ChovusSmartBot:
         self.running = False
         if self._bot_task:
             self._bot_task.cancel()
-        # Zatvori exchange instancu
         try:
             await self.exchange.close()
             logger.info("Exchange instance closed in stop_bot")
@@ -334,6 +337,14 @@ class ChovusSmartBot:
             cursor = conn.cursor()
             cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
             conn.commit()
+
+            # Učitaj trenutne kandidate i eksportuj u JSON
+            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
+            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
+            with open("user_data/candidates.json", "w") as f:
+                json.dump(candidates, f, indent=4)
+
             conn.close()
+            logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
         except Exception as e:
             logger.error(f"Error logging candidate for {symbol}: {str(e)}")

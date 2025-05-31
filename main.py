@@ -11,19 +11,27 @@ from dotenv import load_dotenv
 import sqlite3
 from bot import ChovusSmartBot, init_db
 from config import get_config, set_config
-from settings import DB_PATH  # Uvozi DB_PATH iz settings.py
+from settings import DB_PATH
 import logging
+from logging.handlers import RotatingFileHandler
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
-    ]
-)
+# Podesi logging sa rotacijom
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
+# Kreiraj RotatingFileHandler
+file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)  # 10 MB po fajlu, čuvaj 5 backup fajlova
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Dodaj StreamHandler za konzolu
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.DEBUG)
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Dodaj handlere u logger
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler
 load_dotenv()
 
 key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
@@ -32,14 +40,12 @@ print(f"🔑 Using API_KEY: {key}")
 app = FastAPI()
 templates = Jinja2Templates(directory="html")
 
-# Inicijalizuj bota
 bot = ChovusSmartBot(testnet=True)
 bot_task = None
 
-# Lifespan događaj za inicijalizaciju i gašenje
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup faza
     try:
         await init_db()
         logger.info("Database initialized successfully")
@@ -47,23 +53,20 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize database: {str(e)}")
         raise
     yield
-    # Shutdown faza
     try:
         if bot.running:
-            bot.stop_bot()
+            await bot.stop_bot()  # Dodaj await ovde
             if bot._bot_task and not bot._bot_task.done():
                 await bot._bot_task
-        # Zatvori exchange instancu
         await bot.exchange.close()
         logger.info("Exchange instance closed successfully")
     except Exception as e:
         logger.error(f"Error closing exchange instance: {str(e)}")
     logger.info("Shutting down application")
 
-# Prosledi lifespan kontekst FastAPI aplikaciji
+
 app = FastAPI(lifespan=lifespan)
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -73,30 +76,35 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# Middleware za logovanje
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logger.info(f"Incoming request: {request.method} {request.url}")
     response = await call_next(request)
     return response
 
-# API modeli
+
 class TelegramMessage(BaseModel):
     message: str
 
+
 class StrategyRequest(BaseModel):
     strategy_name: str
+
 
 class LeverageRequest(BaseModel):
     leverage: int
     symbol: str = None
 
+
 class AmountRequest(BaseModel):
     amount: float
+
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
 
 @app.post("/api/start")
 async def start_bot_endpoint():
@@ -110,12 +118,13 @@ async def start_bot_endpoint():
             raise HTTPException(status_code=500, detail=f"Failed to start bot: {e}")
     return {"status": "Bot is already running"}
 
+
 @app.post("/api/stop")
 async def stop_bot_endpoint():
     global bot_task
     if bot.running:
         try:
-            bot.stop_bot()
+            await bot.stop_bot()  # Dodaj await ovde
             if bot._bot_task and not bot._bot_task.done():
                 await bot._bot_task
             bot_task = None
@@ -124,23 +133,27 @@ async def stop_bot_endpoint():
             raise HTTPException(status_code=500, detail=f"Failed to stop bot: {e}")
     return {"status": "Bot is not running"}
 
+
 @app.get("/api/status")
 async def get_bot_status_endpoint():
     return {"status": bot.get_bot_status(), "strategy": bot.current_strategy}
 
+
 @app.post("/api/restart")
 async def restart_bot_endpoint():
     if bot.running:
-        bot.stop_bot()
+        await bot.stop_bot()  # Dodaj await ovde
         if bot._bot_task and not bot._bot_task.done():
             await bot._bot_task
     await bot.start_bot()
     return {"status": "Bot restarted"}
 
+
 @app.post("/api/set_strategy")
 async def set_strategy_endpoint(request: StrategyRequest):
     strategy_status = bot.set_bot_strategy(request.strategy_name)
     return {"status": f"Strategy set to: {strategy_status}"}
+
 
 @app.get("/api/balance")
 def get_balance():
@@ -148,6 +161,7 @@ def get_balance():
         "wallet_balance": get_config("balance", "0"),
         "score": get_config("score", "0")
     }
+
 
 @app.get("/api/trades")
 def get_trades():
@@ -159,14 +173,17 @@ def get_trades():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trades: {e}")
 
+
 @app.get("/api/pairs")
 def get_pairs():
     pairs = get_config("available_pairs", "")
     return pairs.split(",") if pairs else []
 
+
 @app.post("/api/send_telegram")
 async def send_telegram_endpoint(msg: TelegramMessage):
     return await bot._send_telegram_message(msg.message)
+
 
 @app.get("/api/market_data")
 async def get_market_data(symbol: str = "ETH/BTC"):
@@ -190,15 +207,18 @@ async def get_market_data(symbol: str = "ETH/BTC"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching market data: {e}")
 
+
 @app.get("/api/candidates")
 async def get_candidates():
     try:
         with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 10")
-            return [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
+            cursor.execute(
+                "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 10")
+            return [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching candidates: {e}")
+
 
 @app.get("/api/signals")
 async def get_signals():
@@ -207,22 +227,26 @@ async def get_signals():
         with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT symbol, price, timestamp FROM trades WHERE outcome = 'TP' ORDER BY id DESC LIMIT 5")
-            signals.extend([{"symbol": s, "price": p, "time": t, "type": "Trade (TP)"} for s, p, t in cursor.fetchall()])
+            signals.extend(
+                [{"symbol": s, "price": p, "time": t, "type": "Trade (TP)"} for s, p, t in cursor.fetchall()])
 
         if not signals:
             with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT symbol, price, score, timestamp FROM candidates WHERE score > 0.5 ORDER BY score DESC LIMIT 5")
+                cursor.execute(
+                    "SELECT symbol, price, score, timestamp FROM candidates WHERE score > 0.5 ORDER BY score DESC LIMIT 5")
                 candidates = cursor.fetchall()
                 for symbol, price, score, timestamp in candidates:
                     df = await bot.get_candles(symbol)
                     crossover = bot.confirm_smma_wma_crossover(df)
                     in_fib_zone = bot.fib_zone_check(df)
                     if crossover and in_fib_zone:
-                        signals.append({"symbol": symbol, "price": price, "time": timestamp, "type": "Potential (Crossover + Fib)"})
+                        signals.append({"symbol": symbol, "price": price, "time": timestamp,
+                                        "type": "Potential (Crossover + Fib)"})
         return signals if signals else [{"symbol": "N/A", "price": 0, "time": "N/A", "type": "N/A"}]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching signals: {e}")
+
 
 @app.post("/api/set_leverage")
 async def set_leverage(request: LeverageRequest):
@@ -238,6 +262,7 @@ async def set_leverage(request: LeverageRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting leverage: {e}")
 
+
 @app.post("/api/set_manual_amount")
 async def set_manual_amount(request: AmountRequest):
     try:
@@ -246,6 +271,7 @@ async def set_manual_amount(request: AmountRequest):
         return {"status": f"Manual amount set to: {request.amount} USDT"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting manual amount: {e}")
+
 
 @app.get("/api/logs")
 async def get_logs():
@@ -256,3 +282,28 @@ async def get_logs():
             return [{"time": t, "message": m} for t, m in cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
+
+
+@app.get("/api/db_dump")
+async def db_dump():
+    try:
+        dump = {}
+        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT key, value FROM config")
+            dump["config"] = [{"key": k, "value": v} for k, v in cursor.fetchall()]
+
+            cursor.execute("SELECT symbol, price, timestamp, outcome FROM trades ORDER BY id DESC LIMIT 20")
+            dump["trades"] = [{"symbol": s, "price": p, "time": t, "outcome": o} for s, p, t, o in cursor.fetchall()]
+
+            cursor.execute(
+                "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 20")
+            dump["candidates"] = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
+
+            cursor.execute("SELECT timestamp, message FROM bot_logs ORDER BY id DESC LIMIT 20")
+            dump["bot_logs"] = [{"time": t, "message": m} for t, m in cursor.fetchall()]
+
+        return dump
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error dumping database: {e}")
