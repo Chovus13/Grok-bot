@@ -246,9 +246,3 @@ async def get_logs():
             return [{"time": t, "message": m} for t, m in cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
-
-# # Dodaj u main.py privremeni endpoint za testiranje
-# @app.get("/api/export_candidates")
-# async def export_candidates():
-#     self.export_candidates_to_json()
-#     return {"status": "Export triggered"}
