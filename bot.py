@@ -314,6 +314,7 @@ class ChovusSmartBot:
         if in_fib_zone: score += 0.5
         return min(score / 4.0, 1.0)
 
+#<<<<<<< _scan_pair
     # FIXME . Skeniranje svih futures parova
     # USDⓈ-M Futures
     # API: Koristiš GET /fapi/v1/exchangeInfo za dobijanje svih parova. Ovo vraća listu simbola sa detaljima (npr. pricePrecision, quantityPrecision, filters).
@@ -327,6 +328,8 @@ class ChovusSmartBot:
     #
     # Akcija: Iteriraj kroz symbols iz /fapi/v1/exchangeInfo da dobiješ sve USDⓈ-M parove. Za svaki par, proveri minQty, maxQty, i stepSize iz LOT_SIZE filtera kako bi postavio validan amount.
 
+#=======
+#>>>>>>> master
     async def _scan_pairs(self, limit=10):
         log_action("Starting pair scanning...")
         try:
