@@ -459,7 +459,7 @@ class ChovusSmartBot:
         if not token or not chat_id:
             log_action("Missing Telegram token or chat_id in .env")
             return {"status": "❌ Missing token or chat_id in .env"}
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        url = f"https://api.telegram.org/bot{token}/sendMessage
         data = {"chat_id": chat_id, "text": message}
         try:
             r = requests.post(url, data=data)
