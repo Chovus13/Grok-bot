@@ -335,6 +335,7 @@ class ChovusSmartBot:
         if in_fib_zone: score += 0.5
         return min(score / 4.0, 1.0)
 
+#<<<<<<< _scan_pair
     # FIXME . Skeniranje svih futures parova
     # USDⓈ-M Futures
     # API: Koristiš GET /fapi/v1/exchangeInfo za dobijanje svih parova. Ovo vraća listu simbola sa detaljima (npr. pricePrecision, quantityPrecision, filters).
