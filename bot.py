@@ -6,9 +6,66 @@ import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
 import os
-from main import DB_PATH  # Importuj DB_PATH iz main.py
+from config import get_config
+from settings import DB_PATH  # Uvozi DB_PATH iz settings.py
 
 logger = logging.getLogger(__name__)
+
+
+async def init_db():
+    try:
+        await asyncio.to_thread(_init_db_sync)
+        logger.info("Database initialized successfully in async mode")
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
+
+
+def _init_db_sync():
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                       ("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "10"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "10"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_SOL_USDT", "10"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_key", os.getenv("API_KEY", "")))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                       ("api_secret", os.getenv("API_SECRET", "")))
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                price REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                outcome TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                price REAL,
+                score REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                message TEXT
+            )
+        """)
+        conn.commit()
 
 
 class ChovusSmartBot:
@@ -21,8 +78,18 @@ class ChovusSmartBot:
             'apiKey': self.api_key,
             'secret': self.api_secret,
             'enableRateLimit': True,
-            'urls': {'api': {'fapi': 'https://testnet.binancefuture.com'}} if testnet else {}
+            'urls': {
+                'api': {
+                    'fapi': 'https://testnet.binancefuture.com'
+                }
+            } if testnet else {
+
+                'api': {
+                    'fapi': 'https://testnet.binance.vision/sapi'
+                }
+            }
         })
+        self.exchange.set_sandbox_mode(True)
         self.running = False
         self._bot_task = None
         self.current_strategy = "default"
@@ -158,10 +225,16 @@ class ChovusSmartBot:
         self._bot_task = asyncio.create_task(self.run())
         logger.info("Bot started")
 
-    def stop_bot(self):
+    async def stop_bot(self):
         self.running = False
         if self._bot_task:
             self._bot_task.cancel()
+        # Zatvori exchange instancu
+        try:
+            await self.exchange.close()
+            logger.info("Exchange instance closed in stop_bot")
+        except Exception as e:
+            logger.error(f"Error closing exchange in stop_bot: {str(e)}")
         logger.info("Bot stopped")
 
     def get_bot_status(self):
@@ -257,82 +330,10 @@ class ChovusSmartBot:
 
     def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
-                conn.commit()
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
+            conn.commit()
+            conn.close()
         except Exception as e:
             logger.error(f"Error logging candidate for {symbol}: {str(e)}")
-
-
-def get_config(key: str, default=None):
-    try:
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM config WHERE key=?", (key,))
-            result = cursor.fetchone()
-            return result[0] if result else default
-    except Exception as e:
-        logger.error(f"Error fetching config for {key}: {str(e)}")
-        return default
-
-
-def set_config(key: str, value: str):
-    try:
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"Error setting config for {key}: {str(e)}")
-
-
-def init_db():
-    try:
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS config (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
-                           ("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT"))
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "10"))
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "10"))
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_SOL_USDT", "10"))
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
-                           ("api_key", os.getenv("API_KEY", "")))
-            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
-                           ("api_secret", os.getenv("API_SECRET", "")))
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    price REAL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    outcome TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS candidates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    price REAL,
-                    score REAL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS bot_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    message TEXT
-                )
-            """)
-            conn.commit()
-    except Exception as e:
-        logger.error(f"Error initializing database: {str(e)}")

@@ -4,14 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 import asyncio
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 import sqlite3
-from bot import ChovusSmartBot, set_config, init_db
+from bot import ChovusSmartBot, init_db
+from config import get_config, set_config
+from settings import DB_PATH  # Uvozi DB_PATH iz settings.py
 import logging
-from config import get_config
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -30,14 +31,37 @@ print(f"🔑 Using API_KEY: {key}")
 
 app = FastAPI()
 templates = Jinja2Templates(directory="html")
-DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
-
-# Inicijalizuj bazu pri pokretanju aplikacije
-init_db()
 
 # Inicijalizuj bota
 bot = ChovusSmartBot(testnet=True)
 bot_task = None
+
+# Lifespan događaj za inicijalizaciju i gašenje
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup faza
+    try:
+        await init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
+    yield
+    # Shutdown faza
+    try:
+        if bot.running:
+            bot.stop_bot()
+            if bot._bot_task and not bot._bot_task.done():
+                await bot._bot_task
+        # Zatvori exchange instancu
+        await bot.exchange.close()
+        logger.info("Exchange instance closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing exchange instance: {str(e)}")
+    logger.info("Shutting down application")
+
+# Prosledi lifespan kontekst FastAPI aplikaciji
+app = FastAPI(lifespan=lifespan)
 
 # CORS Middleware
 app.add_middleware(

@@ -36,7 +36,8 @@ EXPOSE 8080
 # Kreiraj običnog korisnika
 #USER nginx
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
-    chmod -R 777 /app/user_data && \
+    chmod -R 0666 /app/user_data && \
+    chmod  666 /app/bot.log && \
     chmod -R 0755 /usr/share/nginx/html
 ## /app/logs && \
 # Prebaci na nginx korisnika
