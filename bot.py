@@ -1,24 +1,21 @@
 # ChovusSmartBot_v9.py
 import ccxt.async_support as ccxt
 import time
-import math
 import os
 import json
 from datetime import datetime, timedelta
 import pandas as pd
-import numpy as np
 import threading
 import schedule
 import requests
-from pandas import DataFrame
-from typing import Optional, Union
 from dotenv import load_dotenv
 import asyncio
 import sqlite3
 from pathlib import Path
 import logging
 import logging.handlers
-from typing import List, Tuple, Any, Dict
+from .scan_pairs_safe_amount import _scan_pairs, calculate_amount, get_available_balance
+from typing import Any, Dict
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +174,7 @@ class ChovusSmartBot:
         if get_config("report_time") is None:
             set_config("report_time", "09:00")
 
-    from .scan_pairs_safe_amount import _scan_pairs, calculate_amount, get_available_balance
+
     scan_pairs = _scan_pairs
     calculate_amount = calculate_amount
     get_available_balance = get_available_balance
