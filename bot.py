@@ -1,25 +1,22 @@
 # ChovusSmartBot_v9.py
 import ccxt.async_support as ccxt
 import time
-import math
 import os
 import json
 from datetime import datetime, timedelta
 import pandas as pd
-import numpy as np
 import threading
 import schedule
 import requests
-from pandas import DataFrame
-from typing import Optional, Union
 from dotenv import load_dotenv
 import asyncio
 import sqlite3
 from pathlib import Path
 import logging
 import logging.handlers
-from typing import List, Tuple
-#from scan_pairs_safe_amount import _scan_pairs, calculate_amount, get_available_balance
+from .scan_pairs_safe_amount import _scan_pairs, calculate_amount, get_available_balance
+from typing import Any, Dict, List, Tuple
+
 
 
 logger = logging.getLogger(__name__)
@@ -85,7 +82,21 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, symbol TEXT, price REAL, score REAL)''')
         conn.commit()
 
-init_db()  # Inicijalizuj bazu pri pokretanju
+# _config_data = {} # Primer skladišta za konfiguraciju
+# def get_config(key: str, default: Any = None) -> Any:
+#     """Jednostavan primer get_config funkcije."""
+#     global _config_data
+#     # U praksi, ovde bi čitao iz fajla, env varijabli, itd.
+#     if not _config_data: # Učitaj samo jednom
+#         logging.info("Učitavanje dummy konfiguracije...")
+#         _config_data = {
+#             "available_pairs": "BTC/USDT,ETH/USDT,SOL/USDT",
+#             "leverage_BTC_USDT": 10,
+#             "balance": "1000.0",
+#             "api_key": "TVOJ_API_KEY",
+#             "secret_key": "TVOJ_SECRET_KEY"
+#         }
+#    return _config_data.get(key, default)
 
 def get_config(key: str, default=None):
     with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
@@ -138,8 +149,12 @@ TRAILING_TP_STEP = 0.005
 TRAILING_TP_OFFSET = 0.02
 #leverage = []
 #LEVERAGE = 1
+
+
 class ChovusSmartBot:
     def __init__(self):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.info("Inicijalizacija ChovusSmartBot-a...")
         self.running = False
         self.current_strategy = "Default"
         self.leverage = int(get_config("leverage", "10"))
@@ -161,7 +176,12 @@ class ChovusSmartBot:
         if get_config("report_time") is None:
             set_config("report_time", "09:00")
 
-# FIXME async def connect_websocket(self):
+
+    scan_pairs = _scan_pairs
+    calculate_amount = calculate_amount
+    get_available_balance = get_available_balance
+
+    # FIXME async def connect_websocket(self):
     #     ws = await exchange.watch_ticker('ETHBTC')
     #     async for msg in ws:
     #         logger.debug(f"Received ticker: {msg}")
@@ -180,7 +200,7 @@ class ChovusSmartBot:
         log_action("Bot starting...")
         self.running = True
         try:
-            await self.set_leverage(self.leverage)  # Osiguraj da je set_leverage await-ovan
+            await self.set_leverage(self.symbol, self.leverage)  # Osiguraj da je set_leverage await-ovan
         except Exception as e:
             log_action(f"Error setting leverage in start_bot: {str(e)}")
             self.running = False
@@ -349,6 +369,136 @@ class ChovusSmartBot:
     #
     # Akcija: Iteriraj kroz symbols iz /fapi/v1/exchangeInfo da dobiješ sve USDⓈ-M parove. Za svaki par, proveri minQty, maxQty, i stepSize iz LOT_SIZE filtera kako bi postavio validan amount.
 
+
+    # async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
+    #     log_action = logging.getLogger(__name__).info
+    #     log_action("Starting pair scanning for USDⓈ-M Futures...")
+    #
+    #     try:
+    #         log_action("Fetching exchange info...")
+    #         exchange_info = await self.exchange.fetch_markets()
+    #         markets = {m['symbol']: m for m in exchange_info if m['type'] == 'future' and m['quote'] == 'USDT'}
+    #
+    #         available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT")
+    #         all_futures = available_pairs.split(",") if available_pairs else ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+    #         all_futures = [p for p in all_futures if p in markets]
+    #         log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
+    #
+    #         if not all_futures:
+    #             log_action("No valid USDⓈ-M pairs defined in config. Add pairs to scan.")
+    #             return []
+    #
+    #         log_action("Fetching tickers...")
+    #         try:
+    #             tickers = await self.exchange.fetch_tickers(all_futures)
+    #             log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
+    #         except Exception as e:
+    #             log_action(f"Error fetching tickers: {str(e)}")
+    #             return []
+    #
+    #         pairs = []
+    #         for symbol in all_futures:
+    #             try:
+    #                 ticker = tickers.get(symbol)
+    #                 if not ticker:
+    #                     log_action(f"No ticker data for {symbol}, skipping.")
+    #                     continue
+    #
+    #                 price = ticker.get('last', 0)
+    #                 volume = ticker.get('quoteVolume', 0)
+    #                 if not (volume and price and price > 0):
+    #                     log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
+    #                     continue
+    #
+    #                 market = markets.get(symbol, {})
+    #                 lot_size = next((f for f in market.get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
+    #                 price_filter = next((f for f in market.get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
+    #
+    #                 min_qty = float(lot_size.get('minQty', 0))
+    #                 max_qty = float(lot_size.get('maxQty', float('inf')))
+    #                 step_size = float(lot_size.get('stepSize', 0))
+    #                 tick_size = float(price_filter.get('tickSize', 0))
+    #
+    #                 amount = self.calculate_amount(symbol, price, min_qty, max_qty, step_size)
+    #                 if not amount:
+    #                     log_action(f"Invalid amount for {symbol}, skipping.")
+    #                     continue
+    #
+    #                 leverage = get_config(f"leverage_{symbol.replace('/', '_')}", 10)
+    #                 try:
+    #                     await self.exchange.set_leverage(leverage, symbol=symbol)
+    #                     log_action(f"Leverage set to {leverage}x for {symbol}")
+    #                 except Exception as e:
+    #                     log_action(f"Failed to set leverage for {symbol}: {str(e)}")
+    #                     continue
+    #
+    #                 log_action(f"Fetching candles for {symbol}...")
+    #                 df = await self.get_candles(symbol, timeframe='1h', limit=150)
+    #                 if len(df) < 150:
+    #                     log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
+    #                     continue
+    #
+    #                 log_action(f"Calculating indicators for {symbol}...")
+    #                 crossover = self.confirm_smma_wma_crossover(df)
+    #                 in_fib_zone = self.fib_zone_check(df)
+    #                 avg_volume = df['volume'].iloc[-50:].mean() if len(df) >= 50 else volume
+    #                 score = self.ai_score(price, volume, avg_volume, crossover, in_fib_zone)
+    #
+    #                 log_action(
+    #                     f"Scanned {symbol} | Price: {price:.4f} | Volume: {volume:.2f} | Amount: {amount} | "
+    #                     f"Score: {score:.2f} | Crossover: {crossover} | Fib Zone: {in_fib_zone}"
+    #                 )
+    #                 self.log_candidate(symbol, price, score)
+    #                 if score > 0.2:
+    #                     pairs.append((symbol, price, volume, score, amount))
+    #                     log_action(
+    #                         f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
+    #             except Exception as e:
+    #                 log_action(f"Error scanning {symbol}: {str(e)}")
+    #                 continue
+    #
+    #         pairs.sort(key=lambda x: x[3], reverse=True)
+    #         log_action(f"Scanning complete. Selected {len(pairs)} candidates.")
+    #         return pairs[:limit]
+    #
+    #     except Exception as e:
+    #         log_action(f"Error in pair scanning: {str(e)}")
+    #         return []
+    #
+    # async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float,
+    #                            step_size: float) -> float:
+    #     try:
+    #         balance = await self.get_available_balance()
+    #         target_risk = balance * 0.1 / price
+    #         amount = max(min_qty, min(max_qty, round(target_risk / step_size) * step_size))
+    #
+    #         market = self.exchange.markets.get(symbol, {})
+    #         precision = market.get('precision', {}).get('amount', 8)
+    #         amount = round(amount, precision)
+    #
+    #         if amount < min_qty or amount > max_qty:
+    #             logging.error(f"Calculated amount {amount} for {symbol} is out of bounds [{min_qty}, {max_qty}]")
+    #             return 0
+    #         return amount
+    #     except Exception as e:
+    #         logging.error(f"Error calculating amount for {symbol}: {str(e)}")
+    #         return 0
+    #
+    # async def get_available_balance(self) -> float:
+    #     """
+    #     Dohvata raspoloživi USDT balans za USDⓈ-M Futures.
+    #     """
+    #     try:
+    #         balance = await self.exchange.fetch_balance(params={"type": "future"})
+    #         available = float(balance['USDT'].get('free', 0))  # Koristi 'free' za raspoloživi balans
+    #         logging.info(f"Fetched available balance: {available} USDT")
+    #         return available
+    #     except Exception as e:
+    #         logging.error(f"Error fetching balance: {str(e)}")
+    #         fallback = float(get_config("balance", "0"))  # Fallback iz config-a
+    #         logging.warning(f"Using fallback balance: {fallback} USDT")
+    #         return fallback
+
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
         log_action = logging.getLogger(__name__).info
         log_action("Starting pair scanning for USDⓈ-M Futures...")
@@ -443,6 +593,7 @@ class ChovusSmartBot:
         except Exception as e:
             log_action(f"Error in pair scanning: {str(e)}")
             return []
+
 
     async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float,
                                step_size: float) -> float:
