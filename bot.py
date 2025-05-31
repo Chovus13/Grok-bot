@@ -132,6 +132,9 @@ class ChovusSmartBot:
             'enableRateLimit': True,
             'urls': {'api': {'fapi': 'https://testnet.binancefuture.com'}},
         })
+        self._scan_pairs = _scan_pairs.__get__(self, ChovusSmartBot)  # Bind metoda na self
+        self.calculate_amount = calculate_amount.__get__(self, ChovusSmartBot)
+        self.get_available_balance = get_available_balance.__get__(self, ChovusSmartBot)
         self.exchange.load_markets()
         self.exchange.fetch_balance
         if get_config("balance") is None:
