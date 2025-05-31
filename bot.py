@@ -22,47 +22,81 @@ load_dotenv()
 # DB setup
 DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, price REAL, timestamp TEXT, outcome TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS score_log (timestamp TEXT, score INTEGER)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS bot_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, symbol TEXT, price REAL, score REAL)''')
-conn.commit()
+
+def init_db():
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, price REAL, timestamp TEXT, outcome TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS score_log (timestamp TEXT, score INTEGER)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS bot_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, symbol TEXT, price REAL, score REAL)''')
+        conn.commit()
+
+init_db()  # Inicijalizuj bazu pri pokretanju
 
 def get_config(key: str, default=None):
-    cursor.execute("SELECT value FROM config WHERE key=?", (key,))
-    result = cursor.fetchone()
-    return result[0] if result else default
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM config WHERE key=?", (key,))
+        result = cursor.fetchone()
+        return result[0] if result else default
 
 def set_config(key: str, value: str):
-    cursor.execute("REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
-    conn.commit()
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
 
 def get_all_config():
-    cursor.execute("SELECT key, value FROM config")
-    return {k: v for k, v in cursor.fetchall()}
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM config")
+        return {k: v for k, v in cursor.fetchall()}
 
 def log_trade(symbol, price, outcome):
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO trades (symbol, price, timestamp, outcome) VALUES (?, ?, ?, ?)", (symbol, price, now, outcome))
-    conn.commit()
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO trades (symbol, price, timestamp, outcome) VALUES (?, ?, ?, ?)", (symbol, price, now, outcome))
+        conn.commit()
 
 def log_score(score):
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO score_log (timestamp, score) VALUES (?, ?)", (now, score))
-    conn.commit()
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO score_log (timestamp, score) VALUES (?, ?)", (now, score))
+        conn.commit()
 
 def log_candidate(symbol, price, score):
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO candidates (timestamp, symbol, price, score) VALUES (?, ?, ?, ?)", (now, symbol, price, score))
-    conn.commit()
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO candidates (timestamp, symbol, price, score) VALUES (?, ?, ?, ?)", (now, symbol, price, score))
+        conn.commit()
+    export_candidates_to_json()
+
+def export_candidates_to_json():
+    try:
+        log_action("Exporting candidates to JSON...")
+        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT timestamp, symbol, price, score FROM candidates ORDER BY id DESC LIMIT 10")
+            candidates = [{"time": t, "symbol": s, "price": p, "score": sc} for t, s, p, sc in cursor.fetchall()]
+            json_path = DB_PATH.parent / "candidates.json"
+            log_action(f"Writing candidates to {json_path}")
+            with open(json_path, "w") as f:
+                json.dump(candidates, f, indent=2)
+            log_action("Candidates exported to JSON successfully.")
+    except Exception as e:
+        log_action(f"Error exporting candidates to JSON: {e}")
 
 def log_action(message):
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO bot_logs (timestamp, message) VALUES (?, ?)", (now, message))
-    conn.commit()
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO bot_logs (timestamp, message) VALUES (?, ?)", (now, message))
+        conn.commit()
 
 # Constants
 SYMBOLS = []
@@ -124,7 +158,10 @@ class ChovusSmartBot:
     def set_leverage(self, leverage: int):
         self.leverage = leverage
         log_action(f"Leverage set to: {leverage}x")
-        self.exchange.set_leverage(leverage, symbol=None)  # Postavi leverage na Binance-u
+        try:
+            self.exchange.set_leverage(leverage, symbol=None)
+        except Exception as e:
+            log_action(f"Error setting leverage: {e}")
 
     def set_manual_amount(self, amount: float):
         self.manual_amount = amount
@@ -144,14 +181,16 @@ class ChovusSmartBot:
 
     async def learn_from_history(self):
         try:
-            cursor.execute("SELECT symbol, price, outcome FROM trades")
-            data = cursor.fetchall()
-            df = pd.DataFrame(data, columns=['symbol', 'price', 'outcome'])
-            if df.empty:
-                log_action("No trade data to learn from.")
-                return
-            summary = df.groupby("symbol")["outcome"].value_counts().unstack().fillna(0)
-            log_action(f"Performance summary: {summary.to_dict()}")
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT symbol, price, outcome FROM trades")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['symbol', 'price', 'outcome'])
+                if df.empty:
+                    log_action("No trade data to learn from.")
+                    return
+                summary = df.groupby("symbol")["outcome"].value_counts().unstack().fillna(0)
+                log_action(f"Performance summary: {summary.to_dict()}")
         except Exception as e:
             log_action(f"Error analyzing history: {e}")
 

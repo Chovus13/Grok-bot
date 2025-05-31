@@ -1,5 +1,6 @@
 # main.py
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -7,7 +8,46 @@ import asyncio
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from bot import ChovusSmartBot, get_config, set_config, log_trade, log_score, cursor, conn
+import sqlite3
+from bot import ChovusSmartBot, get_config, set_config, log_trade, log_score
+import logging
+
+
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+def do_something():
+    logger.info('nain.py - valjda -Doing something')
+
+key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
+print(f"🔑 Using API_KEY: {key}")
+
+app = FastAPI()
+templates = Jinja2Templates(directory="html")  # Ostaje "html" jer je index.html u tom folderu
+
+# Inicijalizuj bota
+bot = ChovusSmartBot()
+bot_task = None
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
+
+# --- Middleware ---
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url}")
+    response = await call_next(request)
+    return response
+
 
 load_dotenv()
 
@@ -15,7 +55,8 @@ key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
 print(f"🔑 Using API_KEY: {key}")
 
 app = FastAPI()
-templates = Jinja2Templates(directory="html")  # Ostaje "html" jer je index.html u tom folderu
+templates = Jinja2Templates(directory="html")
+DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
 
 # Inicijalizuj bota
 bot = ChovusSmartBot()
@@ -38,7 +79,6 @@ class AmountRequest(BaseModel):
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-# Postojeći endpoin-i
 @app.post("/api/start")
 async def start_bot_endpoint():
     global bot_task
@@ -81,9 +121,9 @@ async def set_strategy_endpoint(request: StrategyRequest):
     strategy_status = bot.set_bot_strategy(request.strategy_name)
     return {"status": f"Strategy set to: {strategy_status}"}
 
-# @app.get("/api/config")
-# def get_config_api():
-#     return get_all_config()
+@app.get("/api/config")
+def get_config_api():
+    return get_all_config()
 
 @app.get("/api/balance")
 def get_balance():
@@ -94,8 +134,13 @@ def get_balance():
 
 @app.get("/api/trades")
 def get_trades():
-    cursor.execute("SELECT symbol, price, timestamp, outcome FROM trades ORDER BY id DESC LIMIT 20")
-    return [{"symbol": s, "price": p, "time": t, "outcome": o} for s, p, t, o in cursor.fetchall()]
+    try:
+        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT symbol, price, timestamp, outcome FROM trades ORDER BY id DESC LIMIT 20")
+            return [{"symbol": s, "price": p, "time": t, "outcome": o} for s, p, t, o in cursor.fetchall()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching trades: {e}")
 
 @app.get("/api/pairs")
 def get_pairs():
@@ -105,7 +150,6 @@ def get_pairs():
 async def send_telegram_endpoint(msg: TelegramMessage):
     return bot._send_telegram_message(msg.message)
 
-# Novi endpoin-i
 @app.get("/api/market_data")
 async def get_market_data(symbol: str = "ETH/BTC"):
     try:
@@ -131,17 +175,36 @@ async def get_market_data(symbol: str = "ETH/BTC"):
 @app.get("/api/candidates")
 async def get_candidates():
     try:
-        candidates = await bot._scan_pairs(limit=5)
-        return [{"symbol": c[0], "price": c[1], "volume": c[2], "score": c[3]} for c in candidates]
+        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 10")
+            return [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching candidates: {e}")
 
 @app.get("/api/signals")
 async def get_signals():
     try:
-        cursor.execute("SELECT symbol, price, timestamp FROM trades WHERE outcome = 'TP' ORDER BY id DESC LIMIT 5")
-        signals = [{"symbol": s, "price": p, "time": t} for s, p, t in cursor.fetchall()]
-        return signals if signals else [{"symbol": "N/A", "price": 0, "time": "N/A"}]
+        signals = []
+        # Prvo proveri da li ima TP trejdova
+        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT symbol, price, timestamp FROM trades WHERE outcome = 'TP' ORDER BY id DESC LIMIT 5")
+            signals.extend([{"symbol": s, "price": p, "time": t, "type": "Trade (TP)"} for s, p, t in cursor.fetchall()])
+
+        # Ako nema TP trejdova, proveri kandidate za potencijalne signale
+        if not signals:
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT symbol, price, score, timestamp FROM candidates WHERE score > 0.5 ORDER BY score DESC LIMIT 5")
+                candidates = cursor.fetchall()
+                for symbol, price, score, timestamp in candidates:
+                    df = await bot.get_candles(symbol)
+                    crossover = bot.confirm_smma_wma_crossover(df)
+                    in_fib_zone = bot.fib_zone_check(df)
+                    if crossover and in_fib_zone:
+                        signals.append({"symbol": symbol, "price": price, "time": timestamp, "type": "Potential (Crossover + Fib)"})
+        return signals if signals else [{"symbol": "N/A", "price": 0, "time": "N/A", "type": "N/A"}]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching signals: {e}")
 
@@ -166,7 +229,16 @@ async def set_manual_amount(request: AmountRequest):
 @app.get("/api/logs")
 async def get_logs():
     try:
-        cursor.execute("SELECT timestamp, message FROM bot_logs ORDER BY id DESC LIMIT 10")
-        return [{"time": t, "message": m} for t, m in cursor.fetchall()]
+        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT timestamp, message FROM bot_logs ORDER BY id DESC LIMIT 10")
+            return [{"time": t, "message": m} for t, m in cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
+
+# Dodaj u main.py privremeni endpoint za testiranje
+@app.get("/api/export_candidates")
+async def export_candidates():
+    from ChovusSmartBot_v9 import export_candidates_to_json
+    export_candidates_to_json()
+    return {"status": "Export triggered"}

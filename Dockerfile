@@ -10,6 +10,8 @@ RUN mkdir -p /app/logs && \
     mkdir -p /app/user_data && \
     touch /app/logs/bot.log && \
     touch /app/logs/error.log && \
+    touch /app/user_data/candidates.json && \
+    touch /app/bot.log && \
     touch /app/logs/access.log
 #    chown -R appuser:appuser /app/logs/ && \
 # odvojeni deo za cache folder
@@ -33,7 +35,8 @@ COPY html/index.html /usr/share/nginx/html
 # Kreiraj običnog korisnika
 #USER nginx
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
-    chmod -R 0755 /usr/share/nginx/html
+    chmod -R 777 /app/user_data && \
+    chmod -R 0755 /usr/share/nginx/html \
 ## /app/logs && \
 # Prebaci na nginx korisnika
 # proveri ko su vlasnici i permisions
