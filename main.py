@@ -9,11 +9,12 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import sqlite3
-from bot import ChovusSmartBot, get_config, set_config
+from bot import ChovusSmartBot, set_config, init_db
 import logging
+from config import get_config
 
 logging.basicConfig(
-    level=logging.DEBUG,  # Promenjeno sa INFO na DEBUG
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("bot.log"),
@@ -22,23 +23,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-
 load_dotenv()
-
-
-
-def do_something():
-    logger.info('nain.py - valjda -Doing something')
 
 key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
 print(f"🔑 Using API_KEY: {key}")
 
 app = FastAPI()
-templates = Jinja2Templates(directory="html")  # Ostaje "html" jer je index.html u tom folderu
+templates = Jinja2Templates(directory="html")
+DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
+
+# Inicijalizuj bazu pri pokretanju aplikacije
+init_db()
 
 # Inicijalizuj bota
-bot = ChovusSmartBot()
+bot = ChovusSmartBot(testnet=True)
 bot_task = None
 
 # CORS Middleware
@@ -51,26 +49,12 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# --- Middleware ---
+# Middleware za logovanje
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logger.info(f"Incoming request: {request.method} {request.url}")
     response = await call_next(request)
     return response
-
-
-load_dotenv()
-
-key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
-print(f"🔑 Using API_KEY: {key}")
-
-app = FastAPI()
-templates = Jinja2Templates(directory="html")
-DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
-
-# Inicijalizuj bota
-bot = ChovusSmartBot()
-bot_task = None
 
 # API modeli
 class TelegramMessage(BaseModel):
@@ -81,6 +65,7 @@ class StrategyRequest(BaseModel):
 
 class LeverageRequest(BaseModel):
     leverage: int
+    symbol: str = None
 
 class AmountRequest(BaseModel):
     amount: float
@@ -94,7 +79,7 @@ async def start_bot_endpoint():
     global bot_task
     if bot_task is None or bot_task.done():
         try:
-            bot_task = asyncio.create_task(bot.start_bot())  # Kreiraj task
+            bot_task = asyncio.create_task(bot.start_bot())
             return {"status": "Bot started"}
         except Exception as e:
             logger.error(f"Failed to start bot: {str(e)}")
@@ -109,6 +94,7 @@ async def stop_bot_endpoint():
             bot.stop_bot()
             if bot._bot_task and not bot._bot_task.done():
                 await bot._bot_task
+            bot_task = None
             return {"status": "Bot stopped"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to stop bot: {e}")
@@ -132,10 +118,6 @@ async def set_strategy_endpoint(request: StrategyRequest):
     strategy_status = bot.set_bot_strategy(request.strategy_name)
     return {"status": f"Strategy set to: {strategy_status}"}
 
-# @app.get("/api/config")
-# def get_config_api():
-#     return get_all_config()
-
 @app.get("/api/balance")
 def get_balance():
     return {
@@ -155,11 +137,12 @@ def get_trades():
 
 @app.get("/api/pairs")
 def get_pairs():
-    return get_config("available_pairs", "").split(",")
+    pairs = get_config("available_pairs", "")
+    return pairs.split(",") if pairs else []
 
 @app.post("/api/send_telegram")
 async def send_telegram_endpoint(msg: TelegramMessage):
-    return bot._send_telegram_message(msg.message)
+    return await bot._send_telegram_message(msg.message)
 
 @app.get("/api/market_data")
 async def get_market_data(symbol: str = "ETH/BTC"):
@@ -197,13 +180,11 @@ async def get_candidates():
 async def get_signals():
     try:
         signals = []
-        # Prvo proveri da li ima TP trejdova
         with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT symbol, price, timestamp FROM trades WHERE outcome = 'TP' ORDER BY id DESC LIMIT 5")
             signals.extend([{"symbol": s, "price": p, "time": t, "type": "Trade (TP)"} for s, p, t in cursor.fetchall()])
 
-        # Ako nema TP trejdova, proveri kandidate za potencijalne signale
         if not signals:
             with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
                 cursor = conn.cursor()
@@ -222,8 +203,13 @@ async def get_signals():
 @app.post("/api/set_leverage")
 async def set_leverage(request: LeverageRequest):
     try:
-        bot.set_leverage(request.leverage)
-        set_config("leverage", str(request.leverage))
+        bot.set_leverage(request.leverage, symbol=request.symbol)
+        if request.symbol:
+            set_config(f"leverage_{request.symbol.replace('/', '_')}", str(request.leverage))
+        else:
+            pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
+            for sym in pairs:
+                set_config(f"leverage_{sym.replace('/', '_')}", str(request.leverage))
         return {"status": f"Leverage set to: {request.leverage}x"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting leverage: {e}")
@@ -246,9 +232,3 @@ async def get_logs():
             return [{"time": t, "message": m} for t, m in cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
-
-# # Dodaj u main.py privremeni endpoint za testiranje
-# @app.get("/api/export_candidates")
-# async def export_candidates():
-#     self.export_candidates_to_json()
-#     return {"status": "Export triggered"}
