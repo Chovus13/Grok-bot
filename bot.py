@@ -16,7 +16,8 @@ import logging
 import logging.handlers
 from .scan_pairs_safe_amount import _scan_pairs, calculate_amount, get_available_balance
 from typing import Any, Dict
-
+from .config import get_config
+import pandas as pd  # Pretpostavljam da koristiš pandas za df u _scan_pairs
 
 logger = logging.getLogger(__name__)
 # Podešavanje logger-a
@@ -144,10 +145,6 @@ class ChovusSmartBot:
         if get_config("report_time") is None:
             set_config("report_time", "09:00")
 
-
-    scan_pairs = _scan_pairs
-    calculate_amount = calculate_amount
-    get_available_balance = get_available_balance
 
     # FIXME async def connect_websocket(self):
     #     ws = await exchange.watch_ticker('ETHBTC')

@@ -1,13 +1,12 @@
 # scan_pairs_safe_amount.py
 import asyncio
 import logging
-import ccxt.async_support as ccxt
-from typing import List, Tuple, TYPE_CHECKING
-from bot import get_config
-if TYPE_CHECKING:
-    from bot import ChovusSmartBot
+from ccxt.async_support import Exchange
+from typing import List, Tuple
+from .config import get_config
 
-async def _scan_pairs(self: 'ChovusSmartBot', limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
+
+async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
     log_action = logging.getLogger(__name__).info
     log_action("Starting pair scanning for USDⓈ-M Futures...")
 
@@ -54,9 +53,8 @@ async def _scan_pairs(self: 'ChovusSmartBot', limit: int = 10) -> List[Tuple[str
                 min_qty = float(lot_size.get('minQty', 0))
                 max_qty = float(lot_size.get('maxQty', float('inf')))
                 step_size = float(lot_size.get('stepSize', 0))
-                tick_size = float(price_filter.get('tickSize', 0))
 
-                amount = self.calculate_amount(symbol, price, min_qty, max_qty, step_size)
+                amount = await self.calculate_amount(symbol, price, min_qty, max_qty, step_size)
                 if not amount:
                     log_action(f"Invalid amount for {symbol}, skipping.")
                     continue
@@ -103,7 +101,7 @@ async def _scan_pairs(self: 'ChovusSmartBot', limit: int = 10) -> List[Tuple[str
         return []
 
 
-async def calculate_amount(self: 'ChovusSmartBot', symbol: str, price: float, min_qty: float, max_qty: float, step_size: float) -> float:
+async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float, step_size: float) -> float:
     try:
         balance = await self.get_available_balance()
         target_risk = balance * 0.1 / price
@@ -122,17 +120,14 @@ async def calculate_amount(self: 'ChovusSmartBot', symbol: str, price: float, mi
         return 0
 
 
-async def get_available_balance(self: 'ChovusSmartBot') -> float:
-    """
-    Dohvata raspoloživi USDT balans za USDⓈ-M Futures.
-    """
+async def get_available_balance(self) -> float:
     try:
         balance = await self.exchange.fetch_balance(params={"type": "future"})
-        available = float(balance['USDT'].get('free', 0))  # Koristi 'free' za raspoloživi balans
+        available = float(balance['USDT'].get('free', 0))
         logging.info(f"Fetched available balance: {available} USDT")
         return available
     except Exception as e:
         logging.error(f"Error fetching balance: {str(e)}")
-        fallback = float(get_config("balance", "0"))  # Fallback iz config-a
+        fallback = float(get_config("balance", "0"))
         logging.warning(f"Using fallback balance: {fallback} USDT")
         return fallback

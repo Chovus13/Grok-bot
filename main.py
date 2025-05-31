@@ -9,7 +9,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import sqlite3
-from bot import ChovusSmartBot, get_config, set_config
+from bot import ChovusSmartBot, set_config
+from config import get_config
 import logging
 
 logging.basicConfig(
