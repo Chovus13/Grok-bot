@@ -9,14 +9,24 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import sqlite3
-from bot import ChovusSmartBot, get_config, set_config, log_trade, log_score
+from bot import ChovusSmartBot, get_config, set_config
 import logging
+
+logging.basicConfig(
+    level=logging.DEBUG,  # Promenjeno sa INFO na DEBUG
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+
 
 def do_something():
     logger.info('nain.py - valjda -Doing something')
@@ -84,9 +94,10 @@ async def start_bot_endpoint():
     global bot_task
     if bot_task is None or bot_task.done():
         try:
-            await bot.start_bot()
+            bot_task = asyncio.create_task(bot.start_bot())  # Kreiraj task
             return {"status": "Bot started"}
         except Exception as e:
+            logger.error(f"Failed to start bot: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to start bot: {e}")
     return {"status": "Bot is already running"}
 
@@ -121,9 +132,9 @@ async def set_strategy_endpoint(request: StrategyRequest):
     strategy_status = bot.set_bot_strategy(request.strategy_name)
     return {"status": f"Strategy set to: {strategy_status}"}
 
-@app.get("/api/config")
-def get_config_api():
-    return get_all_config()
+# @app.get("/api/config")
+# def get_config_api():
+#     return get_all_config()
 
 @app.get("/api/balance")
 def get_balance():
@@ -236,9 +247,8 @@ async def get_logs():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
 
-# Dodaj u main.py privremeni endpoint za testiranje
-@app.get("/api/export_candidates")
-async def export_candidates():
-    from ChovusSmartBot_v9 import export_candidates_to_json
-    export_candidates_to_json()
-    return {"status": "Export triggered"}
+# # Dodaj u main.py privremeni endpoint za testiranje
+# @app.get("/api/export_candidates")
+# async def export_candidates():
+#     self.export_candidates_to_json()
+#     return {"status": "Export triggered"}
