@@ -136,3 +136,4 @@ async def get_available_balance(self: 'ChovusSmartBot') -> float:
         fallback = float(get_config("balance", "0"))  # Fallback iz config-a
         logging.warning(f"Using fallback balance: {fallback} USDT")
         return fallback
+        
