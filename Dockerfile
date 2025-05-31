@@ -5,14 +5,6 @@ WORKDIR /app
 # Kreiraj logs direktorijum i bot.log fajl
 #RUN useradd -m -u 1000 nginx
 #USER nginx
-RUN mkdir -p /app/logs && \
-    mkdir -p /app/html && \
-    mkdir -p /app/user_data && \
-    touch /app/logs/bot.log && \
-    touch /app/logs/error.log && \
-    touch /app/user_data/candidates.json && \
-    touch /app/bot.log && \
-    touch /app/logs/access.log
 #    chown -R appuser:appuser /app/logs/ && \
 # odvojeni deo za cache folder
 #RUN mkdir -p /var/cache/nginx && \
@@ -21,8 +13,18 @@ RUN mkdir -p /app/logs && \
 # Kopiraj fajlove i instaliraj zavisnosti
 COPY . .
 COPY requirements.txt .
+
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY html/index.html /usr/share/nginx/html
+RUN mkdir -p /app/logs && \
+    mkdir -p /app/html && \
+    mkdir -p /app/user_data && \
+    touch /app/logs/bot.log && \
+    touch /app/logs/error.log && \
+    touch /app/user_data/candidates.json && \
+    touch /app/bot.log && \
+    touch /app/logs/access.log
 
 EXPOSE 8080
 # Remove default Nginx config
@@ -31,12 +33,11 @@ EXPOSE 8080
 # Copy custom Nginx config
 #COPY nginx.conf /etc/nginx/nginx.conf
 # COPY html/index.html /app/html/www
-COPY html/index.html /usr/share/nginx/html
 # Kreiraj običnog korisnika
 #USER nginx
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
     chmod -R 777 /app/user_data && \
-    chmod -R 0755 /usr/share/nginx/html \
+    chmod -R 0755 /usr/share/nginx/html
 ## /app/logs && \
 # Prebaci na nginx korisnika
 # proveri ko su vlasnici i permisions
