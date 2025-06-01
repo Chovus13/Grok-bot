@@ -5,32 +5,39 @@ import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
 import os
-from config import get_config, set_config  # Dodaj set_config
+from config import get_config, set_config
 from settings import DB_PATH
 import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 import json
+from pprint import pprint
 
-# Podesi logging na DEBUG
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-# Kreiraj RotatingFileHandler
 file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-# Dodaj StreamHandler za konzolu
 stream_handler = logging.StreamHandler()
-stream_handler.setLevel(logging.DEBUG)  # Osiguraj da konzola prikazuje DEBUG
+stream_handler.setLevel(logging.DEBUG)
 stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-# Dodaj handlere u logger
 logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
 
 load_dotenv()
+
+def table(values):
+    """Formatira listu dict-ova u tabelu za prikaz."""
+    if not values:
+        return "No data to display"
+    first = values[0]
+    keys = list(first.keys()) if isinstance(first, dict) else range(0, len(first))
+    widths = [max([len(str(v[k])) for v in values]) for k in keys]
+    string = ' | '.join(['{:<' + str(w) + '}' for w in widths])
+    return "\n".join([string.format(*[str(v[k]) for k in keys]) for v in values])
 
 async def init_db():
     try:
@@ -87,12 +94,16 @@ class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
         self.api_key = api_key or get_config("api_key", os.getenv("API_KEY", ""))
         self.api_secret = api_secret or get_config("api_secret", os.getenv("API_SECRET", ""))
+        logger.info(f"Using API Key: {self.api_key[:4]}...{self.api_key[-4:]}")
         if not self.api_key or not self.api_secret:
             raise ValueError("API key and secret must be provided via config or environment variables")
         self.exchange = binance({
             'apiKey': self.api_key,
             'secret': self.api_secret,
             'enableRateLimit': True,
+            'options': {
+                'defaultType': 'future',  # Eksplicitno postavljamo futures
+            },
             'urls': {
                 'api': {
                     'fapi': 'https://testnet.binancefuture.com'
@@ -107,7 +118,102 @@ class ChovusSmartBot:
         self.running = False
         self._bot_task = None
         self.current_strategy = "default"
-        self.scanning_status = []  # Dodaj za praćenje statusa skeniranja
+        self.scanning_status = []
+        self.order_book = {"bids": {}, "asks": {}, "lastUpdateId": 0}
+        self.positions = []
+        self.position_mode = "One-way"
+
+    async def fetch_positions(self):
+        """Dohvata trenutne pozicije korisnika."""
+        try:
+            self.positions = await self.exchange.fapiprivatev2_get_positionrisk()
+            logger.info("Fetched positions:\n" + table(self.positions))
+            return self.positions
+        except Exception as e:
+            logger.error(f"Error fetching positions: {str(e)}")
+            return []
+
+    async def fetch_position_mode(self):
+        """Proverava da li je korisnik u One-way ili Hedge modu."""
+        try:
+            response = await self.exchange.fapiprivate_get_positionside_dual()
+            self.position_mode = "Hedge" if response['dualSidePosition'] else "One-way"
+            logger.info(f"Position mode: {self.position_mode}")
+            return self.position_mode
+        except Exception as e:
+            logger.error(f"Error fetching position mode: {str(e)}")
+            return "Unknown"
+
+    async def get_available_balance(self) -> float:
+        try:
+            balance = await self.exchange.fetch_balance(params={"type": "future"})
+            available = float(balance['USDT'].get('free', 0))
+            total = float(balance['USDT'].get('total', 0))
+            logger.info(f"Fetched available balance: {available} USDT | Total: {total} USDT")
+            set_config("balance", str(available))
+            set_config("total_balance", str(total))
+            return available
+        except Exception as e:
+            logger.error(f"Error fetching balance: {str(e)}")
+            fallback = float(get_config("balance", "0"))
+            logger.warning(f"Using fallback balance: {fallback} USDT")
+            return fallback
+
+    async def maintain_order_book(self, symbol="ETHBTC"):
+        try:
+            snapshot = await self.exchange.fetch_order_book(symbol, limit=1000)
+            self.order_book["lastUpdateId"] = snapshot["lastUpdateId"]
+            self.order_book["bids"] = {float(price): float(amount) for price, amount in snapshot["bids"]}
+            self.order_book["asks"] = {float(price): float(amount) for price, amount in snapshot["asks"]}
+            logger.info(f"Order book snapshot fetched for {symbol}: lastUpdateId={self.order_book['lastUpdateId']}")
+
+            stream_name = f"{symbol.lower()}@depth"
+            async for event in self.exchange.watch_order_book(symbol, params={"streams": stream_name}):
+                if "u" not in event or "U" not in event:
+                    continue
+
+                update_id = event["u"]
+                first_update_id = event["U"]
+                previous_update_id = event.get("pu", 0)
+
+                if update_id < self.order_book["lastUpdateId"]:
+                    continue
+
+                if first_update_id <= self.order_book["lastUpdateId"] and update_id >= self.order_book["lastUpdateId"]:
+                    pass
+                elif previous_update_id != self.order_book["lastUpdateId"]:
+                    logger.warning(f"Order book out of sync for {symbol}, restarting...")
+                    await self.maintain_order_book(symbol)
+                    return
+
+                for price, amount in event["bids"]:
+                    price = float(price)
+                    amount = float(amount)
+                    if amount == 0:
+                        self.order_book["bids"].pop(price, None)
+                    else:
+                        self.order_book["bids"][price] = amount
+
+                for price, amount in event["asks"]:
+                    price = float(price)
+                    amount = float(amount)
+                    if amount == 0:
+                        self.order_book["asks"].pop(price, None)
+                    else:
+                        self.order_book["asks"][price] = amount
+
+                self.order_book["lastUpdateId"] = update_id
+                logger.debug(f"Order book updated for {symbol}: lastUpdateId={update_id}")
+        except Exception as e:
+            logger.error(f"Error maintaining order book for {symbol}: {str(e)}")
+            await asyncio.sleep(5)
+            await self.maintain_order_book(symbol)
+
+    def get_order_book(self):
+        return {
+            "bids": sorted([[price, amount] for price, amount in self.order_book["bids"].items()], reverse=True)[:10],
+            "asks": sorted([[price, amount] for price, amount in self.order_book["asks"].items()])[:10]
+        }
 
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
         log_action = logger.debug
@@ -115,15 +221,11 @@ class ChovusSmartBot:
 
         try:
             log_action("Fetching exchange info...")
-            exchange_info = await self.exchange.fetch_markets()
-            markets = {m['symbol']: m for m in exchange_info if m['type'] == 'future' and m['quote'] == 'USDT'}
+            await self.exchange.load_markets()
+            markets = {m['symbol']: m for m in self.exchange.markets.values() if m['type'] == 'future' and m['quote'] == 'USDT'}
             log_action(f"Available futures markets: {list(markets.keys())}")
 
-            normalized_markets = {}
-            for symbol, market in markets.items():
-                base_symbol = symbol.split(':')[0]
-                normalized_markets[base_symbol] = market
-            log_action(f"Normalized markets: {list(normalized_markets.keys())}")
+            normalized_markets = markets
 
             available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
@@ -139,24 +241,22 @@ class ChovusSmartBot:
                 self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
                 return []
 
-            symbol_mapping = {base_symbol: symbol for symbol, base_symbol in [(s, s.split(':')[0]) for s in markets.keys()]}
+            symbol_mapping = {symbol: symbol for symbol in all_futures}
 
             log_action("Fetching tickers using WebSocket...")
             try:
                 tickers = {}
-                async for ticker in self.exchange.watch_tickers([symbol_mapping[s] for s in all_futures]):
-                    base_symbol = ticker['symbol'].split(':')[0]
-                    tickers[base_symbol] = ticker
-                    if len(tickers) == len(all_futures):
-                        break
+                for symbol in all_futures:
+                    ticker = await self.exchange.fetch_ticker(symbol)
+                    tickers[symbol] = ticker
                 log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
-                log_action(f"Error fetching tickers via WebSocket: {str(e)}")
+                log_action(f"Error fetching tickers: {str(e)}")
                 self.scanning_status = [{"symbol": "N/A", "status": f"Error fetching tickers: {str(e)}"}]
                 return []
 
             pairs = []
-            self.scanning_status = []  # Resetuj status
+            self.scanning_status = []
             for symbol in all_futures:
                 try:
                     ticker = tickers.get(symbol)
@@ -173,8 +273,8 @@ class ChovusSmartBot:
                         continue
 
                     market = normalized_markets.get(symbol, {})
-                    lot_size = next((f for f in market.get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
-                    price_filter = next((f for f in market.get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
+                    lot_size = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
+                    price_filter = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
 
                     min_qty = float(lot_size.get('minQty', 0))
                     max_qty = float(lot_size.get('maxQty', float('inf')))
@@ -257,19 +357,6 @@ class ChovusSmartBot:
             logger.error(f"Error calculating amount for {symbol}: {str(e)}")
             return 0
 
-    async def get_available_balance(self) -> float:
-        try:
-            balance = await self.exchange.fetch_balance(params={"type": "future"})
-            available = float(balance['USDT'].get('free', 0))
-            logger.info(f"Fetched available balance: {available} USDT")
-            set_config("balance", str(available))  # Ovo je popravljeno
-            return available
-        except Exception as e:
-            logger.error(f"Error fetching balance: {str(e)}")
-            fallback = float(get_config("balance", "0"))
-            logger.warning(f"Using fallback balance: {fallback} USDT")
-            return fallback
-
     async def place_trade(self, symbol: str, price: float, amount: float):
         try:
             order = await self.exchange.create_limit_buy_order(symbol, amount, price)
@@ -295,7 +382,11 @@ class ChovusSmartBot:
 
     async def start_bot(self):
         self.running = True
+        # Proveri pozicije i režim pri pokretanju
+        await self.fetch_positions()
+        await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
+        asyncio.create_task(self.maintain_order_book("ETHBTC"))
         logger.info("Bot started")
 
     async def stop_bot(self):
@@ -408,7 +499,7 @@ class ChovusSmartBot:
             conn.commit()
 
             cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
-            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
+            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
             with open("user_data/candidates.json", "w") as f:
                 json.dump(candidates, f, indent=4)
 
