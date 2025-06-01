@@ -190,10 +190,15 @@ class ChovusSmartBot:
 
     async def fetch_balance(self):
         try:
-            # PAPI endpoint za balans: /papi/v1/balance
-            balance = await self.exchange.papi_get_balance()
-            available_balance = float(balance[0].get('balance', 0))  # PAPI vraća listu, uzimamo USDT balans
-            total_balance = float(balance[0].get('totalBalance', 0))
+            # Ručno pozovi PAPI endpoint /papi/v1/balance
+            balance = await self.exchange.fetch('papi/v1/balance', params={'recvWindow': 5000})
+            if not isinstance(balance, list) or not balance:
+                raise ValueError("Balance response is empty or not a list")
+            usdt_balance = next((item for item in balance if item.get('asset') == 'USDT'), None)
+            if not usdt_balance:
+                raise ValueError("USDT balance not found in response")
+            available_balance = float(usdt_balance.get('balance', 0))
+            total_balance = float(usdt_balance.get('crossWalletBalance', 0))
             set_config("balance", str(available_balance))
             set_config("total_balance", str(total_balance))
             logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
@@ -206,16 +211,18 @@ class ChovusSmartBot:
 
     async def fetch_positions(self):
         try:
-            # PAPI endpoint za pozicije: /papi/v1/um/positionRisk
-            positions = await self.exchange.papi_get_um_position_risk()
+            # Ručno pozovi PAPI endpoint /papi/v1/um/positionRisk
+            positions = await self.exchange.fetch('papi/v1/um/positionRisk', params={'recvWindow': 5000})
+            if not isinstance(positions, list):
+                raise ValueError("Positions response is not a list")
             self.positions = [
                 {
-                    "symbol": pos['symbol'],
+                    "symbol": pos.get('symbol', ''),
                     "entryPrice": float(pos.get('entryPrice', 0)),
                     "positionAmt": float(pos.get('positionAmt', 0)),
                     "isolated": pos.get('marginType', 'cross') == 'isolated'
                 }
-                for pos in positions
+                for pos in positions if float(pos.get('positionAmt', 0)) != 0  # Samo aktivne pozicije
             ]
             logger.info(f"Fetched positions: {self.positions}")
             return self.positions
@@ -224,18 +231,7 @@ class ChovusSmartBot:
             self.positions = []
             return []
 
-    async def fetch_position_mode(self):
-        try:
-            # PAPI endpoint za režim pozicija: /papi/v1/um/positionSide/dual
-            mode = await self.exchange.papi_get_um_position_side_dual()
-            self.position_mode = "Hedge" if mode['dualSidePosition'] else "One-way"
-            logger.info(f"Position mode: {self.position_mode}")
-            return {"mode": self.position_mode}
-        except Exception as e:
-            logger.error(f"Error fetching position mode: {str(e)}")
-            self.position_mode = "Unknown"
-            return {"mode": "Unknown"}
-
+    # return {"mode": self.position_mode}
 
     # async def fetch_positions(self):
     #     try:

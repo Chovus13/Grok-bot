@@ -37,7 +37,7 @@ EXPOSE 8080
 # Kreiraj običnog korisnika
 #USER nginx
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
-    chown -R 1000:1000 /app/user_data/ && \
+    chown -R appuser:appuser /app/user_data/ && \
     chmod -R 666 /app/user_data/ && \
     chmod  666 /app/bot.log && \
     chmod -R 0755 /usr/share/nginx/html /app/logs bot.log
@@ -47,3 +47,6 @@ RUN chown -R "$USER":www-data /usr/share/nginx/html && \
 #RUN chown -R "$USER":www-data /app/logs && \
 #    chmod -R 0777 /app/logs/ \
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+RUN chown -R appuser:appuser /app/user_data/ && \
+    chmod -R 666 /app/user_data/ /app/bot.log
+USER appuser

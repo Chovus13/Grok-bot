@@ -143,7 +143,7 @@
         }
     }
 
-    async function fetchBalanceAndStrategy() {
+      async function fetchBalanceAndStrategy() {
         try {
             const balanceResponse = await fetch('/api/balance');
             const balanceData = await balanceResponse.json();
@@ -152,9 +152,12 @@
             document.getElementById('leverage').textContent = `${get_config('leverage', '3')}x`;
         } catch (error) {
             console.error('Error fetching balance or leverage:', error);
+            document.getElementById('balance').textContent = '0.00';
             document.getElementById('totalBalance').textContent = '0.00';
         }
     }
+    setInterval(fetchBalanceAndStrategy, 5000);  // Ažuriraj svakih 5 sekundi
+    fetchBalanceAndStrategy();
 
     async function fetchPositions() {
         try {
