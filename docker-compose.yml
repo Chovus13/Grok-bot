@@ -12,6 +12,7 @@ services:
       - "8000:8000"
     volumes:
       - .:/app # Mapirate vaš kod u /app
+      - ./user_data:/app/user_data
       - ./html:/app/html # Ako main.py očekuje html u /app/html
       - ./logs:/app/logs # Ako main.py piše logove u /app/logs
     working_dir: /app

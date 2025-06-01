@@ -48,7 +48,7 @@ async def init_db():
         raise
 
 def _init_db_sync():
-    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS config (
@@ -56,7 +56,7 @@ def _init_db_sync():
                 value TEXT
             )
         """)
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
@@ -251,29 +251,37 @@ class ChovusSmartBot:
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
-            markets = {m['symbol']: m for m in self.exchange.markets.values() if
-                       m['type'] == 'future' and m['quote'] in ['USDT', 'BTC']}
-            log_action(f"Available futures markets: {list(markets.keys())}")
+            # Filtriraj samo perpetual futures (bez datuma isteka)
+            markets = {
+                m['symbol']: m for m in self.exchange.markets.values()
+                if m['type'] == 'future' and m['quote'] in ['USDT', 'BTC'] and ':' not in m['symbol']
+            }
+            log_action(f"Available perpetual futures markets: {list(markets.keys())[:10]}... (total: {len(markets)})")
 
             normalized_markets = markets
 
-            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC")
+            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
-                available_pairs = "BTC/USDT,ETH/USDT,ETH/BTC"
-                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,ETH/BTC")
+                available_pairs = "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"
+                set_config("available_pairs", available_pairs)
+                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT")
             all_futures = available_pairs.split(",") if available_pairs else []
+            all_futures = [p.strip().upper() for p in all_futures if p.strip()]
+            log_action(f"Normalized pairs to scan: {all_futures}")
+
             all_futures = [p for p in all_futures if p in normalized_markets]
-            log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
+            log_action(f"Valid futures pairs after filtering: {all_futures}")
 
             if not all_futures:
-                log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
-                self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
+                log_action(
+                    "No valid USDⓈ-M perpetual pairs found in markets. Available markets may not include perpetual futures.")
+                self.scanning_status = [{"symbol": "N/A", "status": "No perpetual pairs to scan"}]
                 return []
 
             symbol_mapping = {symbol: symbol for symbol in all_futures}
 
-            log_action("Fetching tickers using WebSocket...")
+            log_action("Fetching tickers...")
             try:
                 tickers = {}
                 for symbol in all_futures:
@@ -354,9 +362,9 @@ class ChovusSmartBot:
                         "price": price
                     })
                     self.log_candidate(symbol, price, score)
-                    if score > 0.3:  # Smanjeno sa 0.5 na 0.3 za testiranje
+                    if score > 0.2:  # Smanjeno sa 0.3 na 0.2 za testiranje
                         await self.place_trade(symbol_mapping[symbol], price, amount)
-                        log_action(f"Trade placed for {symbol} with score {score:.2f}")
+                        log_action(f"Trade placed for {symbol} with score {score:.2f}"
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
                         log_action(
@@ -533,7 +541,7 @@ class ChovusSmartBot:
     # bot.py (ažuriraj log_candidate)
     def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
             cursor = conn.cursor()
             cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
             conn.commit()
