@@ -20,13 +20,6 @@ services:
     networks:
       - grok-network
 
-
-
-
-
-
-
-
   nginx:
     image: nginx:latest
     container_name: grok-bot-nginx

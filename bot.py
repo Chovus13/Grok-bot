@@ -1,6 +1,5 @@
 # bot.py
 import asyncio
-import sqlite3
 import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
@@ -13,6 +12,10 @@ from dotenv import load_dotenv
 import json
 import websockets
 from pprint import pprint
+import aiosqlite
+import aiofiles
+
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -42,7 +45,12 @@ def table(values):
 
 async def init_db():
     try:
-        await asyncio.to_thread(_init_db_sync)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('''CREATE TABLE IF NOT EXISTS candidates
+                              (symbol TEXT, price REAL, score REAL, timestamp INTEGER)''')
+            await db.execute('''CREATE TABLE IF NOT EXISTS trades
+                              (symbol TEXT, price REAL, amount REAL, timestamp INTEGER)''')
+            await db.commit()
         logger.info("Database initialized successfully in async mode")
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
@@ -103,11 +111,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Ostaje 'future' jer PM podržava futures
+                'defaultType': 'future',
             },
             'urls': {
                 'api': {
-                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'  # Prebaci na PAPI
+                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'
                 }
             }
         })
@@ -190,15 +198,13 @@ class ChovusSmartBot:
 
     async def fetch_balance(self):
         try:
-            # Ručno pozovi PAPI endpoint /papi/v1/balance
-            balance = await self.exchange.fetch('papi/v1/balance', params={'recvWindow': 5000})
-            if not isinstance(balance, list) or not balance:
-                raise ValueError("Balance response is empty or not a list")
-            usdt_balance = next((item for item in balance if item.get('asset') == 'USDT'), None)
+            # Koristi CCXT fetch_balance za PAPI
+            balance = await self.exchange.fetch_balance(params={'recvWindow': 5000})
+            usdt_balance = next((asset for asset, info in balance['info'].items() if asset == 'USDT'), None)
             if not usdt_balance:
                 raise ValueError("USDT balance not found in response")
-            available_balance = float(usdt_balance.get('balance', 0))
-            total_balance = float(usdt_balance.get('crossWalletBalance', 0))
+            available_balance = float(balance['USDT'].get('free', 0))
+            total_balance = float(balance['USDT'].get('total', 0))
             set_config("balance", str(available_balance))
             set_config("total_balance", str(total_balance))
             logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
@@ -211,8 +217,8 @@ class ChovusSmartBot:
 
     async def fetch_positions(self):
         try:
-            # Ručno pozovi PAPI endpoint /papi/v1/um/positionRisk
-            positions = await self.exchange.fetch('papi/v1/um/positionRisk', params={'recvWindow': 5000})
+            # Koristi CCXT request za PAPI endpoint /papi/v1/um/positionRisk
+            positions = await self.exchange.request('papi/v1/um/positionRisk', 'GET', params={'recvWindow': 5000})
             if not isinstance(positions, list):
                 raise ValueError("Positions response is not a list")
             self.positions = [
@@ -222,7 +228,7 @@ class ChovusSmartBot:
                     "positionAmt": float(pos.get('positionAmt', 0)),
                     "isolated": pos.get('marginType', 'cross') == 'isolated'
                 }
-                for pos in positions if float(pos.get('positionAmt', 0)) != 0  # Samo aktivne pozicije
+                for pos in positions if float(pos.get('positionAmt', 0)) != 0
             ]
             logger.info(f"Fetched positions: {self.positions}")
             return self.positions
@@ -230,6 +236,19 @@ class ChovusSmartBot:
             logger.error(f"Error fetching positions: {str(e)}")
             self.positions = []
             return []
+
+    async def fetch_position_mode(self):
+        try:
+            # Koristi CCXT request za PAPI endpoint /papi/v1/um/positionSide/dual
+            mode = await self.exchange.request('papi/v1/um/positionSide/dual', 'GET', params={'recvWindow': 5000})
+            self.position_mode = "Hedge" if mode.get('dualSidePosition', False) else "One-way"
+            logger.info(f"Position mode: {self.position_mode}")
+            return {"mode": self.position_mode}
+        except Exception as e:
+            logger.error(f"Error fetching position mode: {str(e)}")
+            self.position_mode = "One-way"
+            logger.warning(f"Using fallback position mode: {self.position_mode}")
+            return {"mode": self.position_mode}
 
     # return {"mode": self.position_mode}
 
@@ -497,17 +516,19 @@ class ChovusSmartBot:
             logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
 
             tp_price = price * 1.02
-            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price, params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
+            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price,
+                                                                   params={"stopPrice": tp_price,
+                                                                           "type": "TAKE_PROFIT"})
             logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
 
             sl_price = price * 0.99
             sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
             logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
 
-            with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0) as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
-                conn.commit()
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)",
+                                 (symbol, price, "OPEN"))
+                await db.commit()
 
             return order
         except Exception as e:
@@ -629,20 +650,24 @@ class ChovusSmartBot:
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
     # bot.py (ažuriraj log_candidate)
-    def log_candidate(self, symbol: str, price: float, score: float):
+    async def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
-            conn.commit()
+            timestamp = int(time.time())
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("INSERT INTO candidates (symbol, price, score, timestamp) VALUES (?, ?, ?, ?)",
+                                 (symbol, price, score, timestamp))
+                await db.commit()
 
-            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
-            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
-            with open("user_data/candidates.json", "w") as f:
-                json.dump(candidates, f, indent=4)
+                cursor = await db.execute(
+                    "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
+                candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in
+                              await cursor.fetchall()]
+
+            # Asinhrono upisivanje u candidates.json
+            async with aiofiles.open("user_data/candidates.json", "w") as f:
+                await f.write(json.dumps(candidates, indent=4))
             logger.info(f"Updated candidates.json with {len(candidates)} candidates")
 
-            conn.close()
             logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
         except Exception as e:
             logger.error(f"Error logging candidate for {symbol}: {str(e)}")
