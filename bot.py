@@ -102,15 +102,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Eksplicitno postavljamo futures
+                'defaultType': 'future',  # Osigurava futures tržište
             },
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com'
-                }
-            } if testnet else {
-                'api': {
-                    'fapi': 'https://fapi.binance.com'
+                    'fapi': 'https://testnet.binancefuture.com' if testnet else 'https://fapi.binance.com/fapi/v3'
                 }
             }
         })
