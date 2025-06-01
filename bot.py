@@ -1,3 +1,4 @@
+
 # bot.py
 import asyncio
 import pandas as pd
@@ -14,6 +15,29 @@ import websockets
 from pprint import pprint
 import aiosqlite
 import aiofiles
+
+
+
+logger = logging.getLogger(__name__)
+# Podešavanje logger-a
+os.makedirs('logs', exist_ok=True)
+logger.setLevel(logging.INFO)
+
+file_handler = logging.FileHandler('logs/bot.log')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(stream_handler)
+
+load_dotenv()
+
+
+# DB setup
+DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).resolve().parent / "user_data" / "chovusbot.db"))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 
 
 
@@ -55,6 +79,22 @@ async def init_db():
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
         raise
+
+def log_trade(symbol, price, outcome):
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO trades (symbol, price, timestamp, outcome) VALUES (?, ?, ?, ?)", (symbol, price, now, outcome))
+        conn.commit()
+
+def log_score(score):
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO score_log (timestamp, score) VALUES (?, ?)", (now, score))
+        conn.commit()
+
+
 
 def _init_db_sync():
     with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0) as conn:
@@ -120,6 +160,84 @@ class ChovusSmartBot:
             }
         })
         self.exchange.set_sandbox_mode(testnet)
+
+# Constants
+SYMBOLS = []
+ROUND_LEVELS = [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000]
+VOLUME_SPIKE_THRESHOLD = 1.5  # Pretpostavka za ai_score
+TRADE_DURATION_LIMIT = 60 * 10
+STOP_LOSS_PERCENT = 0.01
+TRAILING_TP_STEP = 0.005
+TRAILING_TP_OFFSET = 0.02
+#leverage = []
+#LEVERAGE = 1
+
+class ChovusSmartBot:
+    def __init__(self):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.info("Inicijalizacija ChovusSmartBot-a...")
+        self.running = False
+        self.current_strategy = "Default"
+        self.leverage = int(get_config("leverage", "10"))
+        self.manual_amount = float(get_config("manual_amount", "0"))
+        self._bot_task = None
+        self._telegram_report_thread = None
+        self.exchange = ccxt.binance({
+            'apiKey': os.getenv('API_KEY'),
+            'secret': os.getenv('API_SECRET'),
+            'enableRateLimit': True,
+            'urls': {'api': {'fapi': 'https://testnet.binancefuture.com'}},
+        })
+        self.exchange.load_markets()
+        self.exchange.fetch_balance
+        if get_config("balance") is None:
+            set_config("balance", "99.0")
+        if get_config("score") is None:
+            set_config("score", "0")
+        if get_config("report_time") is None:
+            set_config("report_time", "09:00")
+
+
+    scan_pairs = _scan_pairs
+    calculate_amount = calculate_amount
+    get_available_balance = get_available_balance
+
+    # FIXME async def connect_websocket(self):
+    #     ws = await exchange.watch_ticker('ETHBTC')
+    #     async for msg in ws:
+    #         logger.debug(f"Received ticker: {msg}")
+
+    # TODO Websocket API je odvojen od market data stream-a, pa za cene koristi wss://dapi.binance.com/dapi/v1 (za COIN-M) ili wss://fstream.binance.com (za USDⓈ-M).
+
+    async def run(self):
+        candidates = await self._scan_pairs(limit=10)
+        for symbol, price, volume, score, amount in candidates:
+            logging.info(f"Top candidate: {symbol} | Price: {price} | Amount: {amount} | Score: {score}")
+
+    async def start_bot(self):
+        if self.running:
+            log_action("Bot is already running.")
+            return
+        log_action("Bot starting...")
+        self.running = True
+        try:
+            await self.set_leverage(self.symbol, self.leverage)  # Osiguraj da je set_leverage await-ovan
+        except Exception as e:
+            log_action(f"Error setting leverage in start_bot: {str(e)}")
+            self.running = False
+            raise
+        self._bot_task = asyncio.create_task(self._main_bot_loop())
+        if self._telegram_report_thread is None or not self._telegram_report_thread.is_alive():
+            self._telegram_report_thread = threading.Thread(target=self._send_report_loop, daemon=True)
+            self._telegram_report_thread.start()
+        log_action("Bot started.")
+
+    def stop_bot(self):
+        if not self.running:
+            log_action("Bot is not running.")
+            return
+        log_action("Bot stopping...")
+
         self.running = False
         self._bot_task = None
         self.current_strategy = "default"
@@ -182,6 +300,7 @@ class ChovusSmartBot:
         # Pokreni WebSocket stream za ETH/BTC
         asyncio.create_task(self.stream_order_book("ETH/BTC"))
         logger.info("Bot started")
+
 
     async def start_bot(self):
         self.running = True
@@ -298,6 +417,77 @@ class ChovusSmartBot:
     #         return fallback_balance
 
     async def maintain_order_book(self, symbol="ETHBTC"):
+
+    # FIXME Ograničenja: Leverage zavisi od para i pravila Binance-a. Proveri leverage polje u /fapi/v1/exchangeInfo
+    #  ili /dapi/v1/exchangeInfo za maksimalni dozvoljeni leverage (npr. za BTCUSD_PERP, proveri maintMarginPercent i requiredMarginPercent).
+
+    async def set_leverage(self, symbol, leverage):
+        try:
+            response = await self.exchange.set_leverage(leverage, symbol)
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
+        except Exception as e:
+            logger.error(f"Failed to set leverage for {symbol}: {e}")
+
+
+
+            # FIXME symbol_info = exchange.fetch_markets()  # Molim te dodaj ovo gde je potrebno
+            # for symbol in symbol_info:
+            #     lot_size = next(filter(lambda x: x['type'] == 'LOT_SIZE', symbol['filters']))
+            #     min_qty, max_qty, step_size = lot_size['minQty'], lot_size['maxQty'], lot_size['stepSize']
+            #     # Postavi amount u skladu sa stepSize
+
+            # TODO Ispravno rukovanje asinhronim pozivima (await za set_leverage i slične). Validaciju amount-a prema LOT_SIZE i contractSize. ZA LEVERAGE, koliki je tvoj max amount u odnou na leverage
+
+
+
+
+    def set_manual_amount(self, amount: float):
+        self.manual_amount = amount
+        log_action(f"Manual amount set to: {amount} USDT")
+
+    def smart_allocation(self, score):
+        if self.manual_amount > 0:
+            return self.manual_amount / float(get_config("balance", "99"))
+        if score > 0.9:
+            return 0.5
+        elif score > 0.8:
+            return 0.3
+        elif score > 0.7:
+            return 0.2
+        else:
+            return 0.1
+
+    def log_candidate(self, symbol, price, score):
+        try:
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                now = time.strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute("INSERT INTO candidates (timestamp, symbol, price, score) VALUES (?, ?, ?, ?)",
+                              (now, symbol, price, score))
+                conn.commit()
+                log_action(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+            self.export_candidates_to_json()
+        except Exception as e:
+            log_action(f"Error in log_candidate: {str(e)}")
+
+    def export_candidates_to_json(self):
+        try:
+            log_action("Exporting candidates to JSON...")
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT timestamp, symbol, price, score FROM candidates ORDER BY id DESC LIMIT 10")
+                candidates = [{"time": t, "symbol": s, "price": p, "score": sc} for t, s, p, sc in cursor.fetchall()]
+                json_path = Path(DB_PATH).parent / "candidates.json"
+                log_action(f"Writing candidates to {json_path}")
+                with open(json_path, "w") as f:
+                    json.dump(candidates, f, indent=2)
+                log_action("Candidates exported to JSON successfully.")
+        except Exception as e:
+            log_action(f"Error exporting candidates to JSON: {e}")
+
+
+    async def learn_from_history(self):
+
         try:
             snapshot = await self.exchange.fetch_order_book(symbol, limit=1000)
             self.order_book["lastUpdateId"] = snapshot["lastUpdateId"]
@@ -343,6 +533,7 @@ class ChovusSmartBot:
                 self.order_book["lastUpdateId"] = update_id
                 logger.debug(f"Order book updated for {symbol}: lastUpdateId={update_id}")
         except Exception as e:
+
             logger.error(f"Error maintaining order book for {symbol}: {str(e)}")
             await asyncio.sleep(5)
             await self.maintain_order_book(symbol)
@@ -460,6 +651,115 @@ class ChovusSmartBot:
                     avg_volume = df['volume'].iloc[-50:].mean() if len(df) >= 50 else volume
                     score = self.ai_score(price, volume, avg_volume, crossover, in_fib_zone)
 
+            log_action(f"Error analyzing history: {e}")
+
+    async def get_candles(self, symbol, timeframe='15m', limit=100):
+        ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        return df
+
+    def calc_smma(self, series, length):
+        smma = [series.iloc[0]]
+        for i in range(1, len(series)):
+            smma.append((smma[-1] * (length - 1) + series.iloc[i]) / length)
+        return pd.Series(smma, index=series.index)
+
+    def calc_wma(self, series, length):
+        weights = range(1, length + 1)
+        return series.rolling(length).apply(
+            lambda prices: sum(weights[i] * prices[i] for i in range(length)) / sum(weights), raw=True)
+
+    def confirm_smma_wma_crossover(self, df):
+        if len(df) < 144: return False
+        smma = self.calc_smma(df['close'], 5)
+        wma = self.calc_wma(df['close'], 144)
+        return smma.iloc[-2] < wma.iloc[-2] and smma.iloc[-1] > wma.iloc[-1]
+
+    def fib_zone_check(self, df):
+        if len(df) < 50: return False
+        high = df['high'].rolling(50).max()
+        low = df['low'].rolling(50).min()
+        fib_range = high - low
+        fib_382 = high - fib_range * 0.382
+        fib_618 = high - fib_range * 0.618
+        latest_price = df['close'].iloc[-1]
+        return fib_618.iloc[-1] <= latest_price <= fib_382.iloc[-1]
+
+    def is_near_round(self, price):
+        for level in ROUND_LEVELS:
+            if abs(price % level - level) < 0.01 * level or price % level < 0.01 * level:
+                return True
+        return False
+
+    def ai_score(self, price, volume, avg_volume, crossover, in_fib_zone):
+        score = 0
+        if self.is_near_round(price): score += 1
+        if volume > avg_volume * VOLUME_SPIKE_THRESHOLD: score += 1
+        if crossover: score += 1.5
+        if in_fib_zone: score += 0.5
+        return min(score / 4.0, 1.0)
+
+    async def _monitor_trade(self, symbol, entry_price):
+        log_action(f"Monitoring trade for {symbol} at entry {entry_price:.4f}")
+        tp = entry_price * (1 + TRAILING_TP_OFFSET)
+        sl = entry_price * (1 - STOP_LOSS_PERCENT)
+        highest_price = entry_price
+        end_time = datetime.now() + timedelta(seconds=TRADE_DURATION_LIMIT)
+        while self.running and datetime.now() < end_time:
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                price = ticker['last']
+                if price > highest_price:
+                    highest_price = price
+                    tp = highest_price * (1 - TRAILING_TP_STEP)
+                if price >= tp:
+                    log_action(f"TP hit for {symbol} at {price:.4f}")
+                    current_balance = float(get_config("balance", "0"))
+                    current_score = int(get_config("score", "0"))
+                    profit = (price - entry_price) * self.leverage
+                    set_config("balance", str(current_balance + profit))
+                    set_config("score", str(current_score + 1))
+                    log_trade(symbol, price, "TP")
+                    await self._execute_sell_order(symbol, 'ALL')
+                    return "TP"
+                if price <= sl:
+                    log_action(f"SL hit for {symbol} at {price:.4f}")
+                    current_balance = float(get_config("balance", "0"))
+                    current_score = int(get_config("score", "0"))
+                    loss = (entry_price - price) * self.leverage
+                    set_config("balance", str(current_balance - loss))
+                    set_config("score", str(current_score - 1))
+                    log_trade(symbol, price, "SL")
+                    await self._execute_sell_order(symbol, 'ALL')
+                    return "SL"
+                await asyncio.sleep(2)
+            except Exception as e:
+                log_action(f"Error monitoring trade for {symbol}: {e}")
+                await asyncio.sleep(5)
+        if self.running:
+            log_action(f"Trade for {symbol} timed out.")
+            current_balance = float(get_config("balance", "0"))
+            current_score = int(get_config("score", "0"))
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                current_price = ticker['last']
+                if current_price > entry_price:
+                    profit = (current_price - entry_price) * self.leverage
+                    set_config("balance", str(current_balance + profit))
+                    set_config("score", str(current_score + 0.5))
+                    log_trade(symbol, current_price, "TIMEOUT_PROFIT")
+                else:
+                    loss = (entry_price - current_price) * self.leverage
+                    set_config("balance", str(current_balance - loss))
+                    set_config("score", str(current_score - 0.5))
+                    log_trade(symbol, current_price, "TIMEOUT_LOSS")
+                await self._execute_sell_order(symbol, 'ALL')
+                return "TIMEOUT"
+            except Exception as e:
+                log_action(f"Error closing timed out trade for {symbol}: {e}")
+                return "ERROR_TIMEOUT"
+
+
                     log_action(
                         f"Scanned {symbol} | Price: {price:.4f} | Volume: {volume:.2f} | Amount: {amount} | "
                         f"Score: {score:.2f} | Crossover: {crossover} | Fib Zone: {in_fib_zone}"
@@ -510,6 +810,7 @@ class ChovusSmartBot:
             logger.error(f"Error calculating amount for {symbol}: {str(e)}")
             return 0
 
+
     async def place_trade(self, symbol: str, price: float, amount: float):
         try:
             order = await self.exchange.create_limit_buy_order(symbol, amount, price)
@@ -517,8 +818,7 @@ class ChovusSmartBot:
 
             tp_price = price * 1.02
             tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price,
-                                                                   params={"stopPrice": tp_price,
-                                                                           "type": "TAKE_PROFIT"})
+                                                                   params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
             logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
 
             sl_price = price * 0.99
@@ -526,8 +826,7 @@ class ChovusSmartBot:
             logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
 
             async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)",
-                                 (symbol, price, "OPEN"))
+                await db.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
                 await db.commit()
 
             return order
@@ -555,6 +854,7 @@ class ChovusSmartBot:
             await self.exchange.close()
             logger.info("Exchange instance closed in stop_bot")
         except Exception as e:
+
             logger.error(f"Error closing exchange in stop_bot: {str(e)}")
         logger.info("Bot stopped")
 
@@ -597,6 +897,50 @@ class ChovusSmartBot:
             await asyncio.sleep(60)
 
     async def get_candles(self, symbol: str, timeframe: str = '1h', limit: int = 150) -> pd.DataFrame:
+
+            log_action(f"Error opening long position for {symbol}: {e}")
+            return None, None
+
+    async def _main_bot_loop(self):
+        log_action("[BOT] Starting main bot loop...")
+        while self.running:
+            log_action("Bot loop iteration running...")
+            try:
+                log_action("Initiating pair scan...")
+                targets = await self._scan_pairs()
+                log_action(f"Found {len(targets)} high-score targets: {[t[0] for t in targets]}")
+                if targets:
+                    symbol, price, volume, score = targets[0]
+                    log_action(f"[BOT] Opening position on {symbol} with score {score:.2f}")
+                    order, entry_price = await self._open_long(symbol, score)
+                    if order:
+                        log_action(f"Position opened for {symbol} at {entry_price}")
+                        trade_outcome = await self._monitor_trade(symbol, entry_price)
+                        log_action(f"Trade for {symbol} finished with outcome: {trade_outcome}")
+                        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+                            cursor = conn.cursor()
+                            now = time.strftime("%Y-%m-%d %H:%M:%S")
+                            cursor.execute("INSERT INTO trades (symbol, price, timestamp, outcome) VALUES (?, ?, ?, ?)",
+                                           (symbol, entry_price, now, trade_outcome))
+                            conn.commit()
+                    else:
+                        log_action(f"Could not open position for {symbol}.")
+                else:
+                    log_action("No high-score targets found in this scan.")
+                await self.learn_from_history()
+            except Exception as ex:
+                log_action(f"Main bot loop error: {str(ex)}")
+            await asyncio.sleep(15)
+
+    def _send_telegram_message(self, message):
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        if not token or not chat_id:
+            log_action("Missing Telegram token or chat_id in .env")
+            return {"status": "❌ Missing token or chat_id in .env"}
+        url = f"https://api.telegram.org/bot{token}/sendMessage
+        data = {"chat_id": chat_id, "text": message}
+
         try:
             if not symbol:
                 raise ValueError("Symbol cannot be empty")
@@ -615,6 +959,7 @@ class ChovusSmartBot:
         except Exception as e:
             logger.error(f"Error calculating SMMA/WMA crossover: {str(e)}")
             return False
+
 
     def fib_zone_check(self, df: pd.DataFrame) -> bool:
         try:
@@ -650,25 +995,45 @@ class ChovusSmartBot:
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
     # bot.py (ažuriraj log_candidate)
-    async def log_candidate(self, symbol: str, price: float, score: float):
-        try:
-            timestamp = int(time.time())
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("INSERT INTO candidates (symbol, price, score, timestamp) VALUES (?, ?, ?, ?)",
-                                 (symbol, price, score, timestamp))
-                await db.commit()
+async def log_candidate(self, symbol: str, price: float, score: float):
+    try:
+        timestamp = int(time.time())
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("INSERT INTO candidates (symbol, price, score, timestamp) VALUES (?, ?, ?, ?)",
+                             (symbol, price, score, timestamp))
+            await db.commit()
 
-                cursor = await db.execute(
-                    "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
-                candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in
-                              await cursor.fetchall()]
+            cursor = await db.execute(
+                "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
+            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in await cursor.fetchall()]
 
-            # Asinhrono upisivanje u candidates.json
-            async with aiofiles.open("user_data/candidates.json", "w") as f:
-                await f.write(json.dumps(candidates, indent=4))
-            logger.info(f"Updated candidates.json with {len(candidates)} candidates")
+        # Asinhrono upisivanje u candidates.json
+        async with aiofiles.open("user_data/candidates.json", "w") as f:
+            await f.write(json.dumps(candidates, indent=4))
+        logger.info(f"Updated candidates.json with {len(candidates)} candidates")
 
-            logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
-        except Exception as e:
-            logger.error(f"Error logging candidate for {symbol}: {str(e)}")
-            raise
+        logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+    except Exception as e:
+        logger.error(f"Error logging candidate for {symbol}: {str(e)}")
+
+    def _send_daily_report(self):
+        msg = f"📊 ChovusBot Report:\nWallet = {float(get_config('balance', '0')):.2f} USDT, Score = {int(get_config('score', '0'))}"
+        self._send_telegram_message(msg)
+        log_action(f"Daily report sent at {datetime.now().strftime('%H:%M')}")
+
+        # FIXME ovo je samo uputsvo, NIJE NEOPHODNO!!! COIN-M Futures
+        # API: GET /dapi/v1/exchangeInfo (primjer iz logova za BTCUSD_PERP).
+        #
+        # Primjer podataka:
+        # Simbol: BTCUSD_PERP
+        #
+        # contractSize: 100
+        #
+        # minQty: 1, maxQty: 1000000, stepSize: 1 (iz LOT_SIZE filtera)
+        #
+        # pricePrecision: 1, tickSize: 0.1
+        #
+        # Filteri: Slično kao USDⓈ-M, koristi LOT_SIZE za amount i PRICE_FILTER za cenu.
+        #
+        # Akcija: Skeniraj sve simbole iz /dapi/v1/exchangeInfo. Postavi amount prema contractSize i LOT_SIZE (npr. za BTCUSD_PERP, amount mora biti celobrojni umnožak od 1).
+

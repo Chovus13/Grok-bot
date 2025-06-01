@@ -9,15 +9,31 @@ import asyncio
 import os
 from dotenv import load_dotenv
 import sqlite3
+
 from bot import ChovusSmartBot, init_db
 from config import get_config, set_config
 from settings import DB_PATH
+
+
 import logging
 from logging.handlers import RotatingFileHandler
+
 
 # Podesi logging sa rotacijom
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+=======
+logging.basicConfig(
+    level=logging.DEBUG,  # Promenjeno sa INFO na DEBUG
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
 
 # Kreiraj RotatingFileHandler
 file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)  # 10 MB po fajlu, čuvaj 5 backup fajlova
@@ -31,7 +47,9 @@ stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(m
 
 # Dodaj handlere u logger
 logger.addHandler(file_handler)
-logger.addHandler(stream_handler)
+
+
+
 
 load_dotenv()
 
@@ -104,8 +122,11 @@ async def read_root(request: Request):
 async def start_bot_endpoint():
     global bot_task
     if bot_task is None or bot_task.done():
-        try:
+
             bot_task = asyncio.create_task(bot.start_bot())
+
+            bot_task = asyncio.create_task(bot.start_bot())  # Kreiraj task
+
             return {"status": "Bot started"}
         except Exception as e:
             logger.error(f"Failed to start bot: {str(e)}")
@@ -143,6 +164,11 @@ async def restart_bot_endpoint():
 async def set_strategy_endpoint(request: StrategyRequest):
     strategy_status = bot.set_bot_strategy(request.strategy_name)
     return {"status": f"Strategy set to: {strategy_status}"}
+
+
+# @app.get("/api/config")
+# def get_config_api():
+#     return get_all_config()
 
 @app.get("/api/balance")
 @app.get("/api/balance")
@@ -336,6 +362,7 @@ async def get_logs():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
 
+
 @app.get("/api/db_dump")
 async def db_dump():
     try:
@@ -432,3 +459,4 @@ async def get_balance():
             "total_balance": get_config("total_balance", "0"),
             "score": get_config("score", "0")
         }
+
