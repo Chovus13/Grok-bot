@@ -5,7 +5,7 @@ import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
 import os
-from config import get_config
+from config import get_config, set_config  # Dodaj set_config
 from settings import DB_PATH
 import logging
 from logging.handlers import RotatingFileHandler
@@ -14,7 +14,7 @@ import json
 
 # Podesi logging na DEBUG
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Promenjeno sa INFO na DEBUG
+logger.setLevel(logging.DEBUG)
 
 # Kreiraj RotatingFileHandler
 file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)
@@ -23,7 +23,7 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(mes
 
 # Dodaj StreamHandler za konzolu
 stream_handler = logging.StreamHandler()
-stream_handler.setLevel(logging.DEBUG)
+stream_handler.setLevel(logging.DEBUG)  # Osiguraj da konzola prikazuje DEBUG
 stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 # Dodaj handlere u logger
@@ -95,21 +95,22 @@ class ChovusSmartBot:
             'enableRateLimit': True,
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com'  # Prvo testiramo na testnetu
+                    'fapi': 'https://testnet.binancefuture.com'
                 }
             } if testnet else {
                 'api': {
-                    'fapi': 'https://fapi.binance.com'  # Live API za pravi novac
+                    'fapi': 'https://fapi.binance.com'
                 }
             }
         })
-        self.exchange.set_sandbox_mode(testnet)  # Uključi sandbox mod samo ako je testnet
+        self.exchange.set_sandbox_mode(testnet)
         self.running = False
         self._bot_task = None
         self.current_strategy = "default"
+        self.scanning_status = []  # Dodaj za praćenje statusa skeniranja
 
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
-        log_action = logger.debug  # Promenjeno na DEBUG
+        log_action = logger.debug
         log_action("Starting pair scanning for USDⓈ-M Futures...")
 
         try:
@@ -118,10 +119,9 @@ class ChovusSmartBot:
             markets = {m['symbol']: m for m in exchange_info if m['type'] == 'future' and m['quote'] == 'USDT'}
             log_action(f"Available futures markets: {list(markets.keys())}")
 
-            # Normalizuj simbole u markets (ukloni sufikse poput :USDT-250627)
             normalized_markets = {}
             for symbol, market in markets.items():
-                base_symbol = symbol.split(':')[0]  # Uzmi osnovni simbol (npr. BTC/USDT)
+                base_symbol = symbol.split(':')[0]
                 normalized_markets[base_symbol] = market
             log_action(f"Normalized markets: {list(normalized_markets.keys())}")
 
@@ -136,9 +136,9 @@ class ChovusSmartBot:
 
             if not all_futures:
                 log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
+                self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
                 return []
 
-            # Mapiranje osnovnih simbola na stvarne simbole sa sufiksima
             symbol_mapping = {base_symbol: symbol for symbol, base_symbol in [(s, s.split(':')[0]) for s in markets.keys()]}
 
             log_action("Fetching tickers using WebSocket...")
@@ -152,20 +152,24 @@ class ChovusSmartBot:
                 log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
                 log_action(f"Error fetching tickers via WebSocket: {str(e)}")
+                self.scanning_status = [{"symbol": "N/A", "status": f"Error fetching tickers: {str(e)}"}]
                 return []
 
             pairs = []
+            self.scanning_status = []  # Resetuj status
             for symbol in all_futures:
                 try:
                     ticker = tickers.get(symbol)
                     if not ticker:
                         log_action(f"No ticker data for {symbol}, skipping.")
+                        self.scanning_status.append({"symbol": symbol, "status": "No ticker data"})
                         continue
 
                     price = ticker.get('last', 0)
                     volume = ticker.get('quoteVolume', 0)
                     if not (volume and price and price > 0):
                         log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
+                        self.scanning_status.append({"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
                         continue
 
                     market = normalized_markets.get(symbol, {})
@@ -179,6 +183,7 @@ class ChovusSmartBot:
                     amount = await self.calculate_amount(symbol, price, min_qty, max_qty, step_size)
                     if not amount:
                         log_action(f"Invalid amount for {symbol}, skipping.")
+                        self.scanning_status.append({"symbol": symbol, "status": "Invalid amount"})
                         continue
 
                     leverage = int(get_config(f"leverage_{symbol.replace('/', '_')}", 3))
@@ -187,12 +192,14 @@ class ChovusSmartBot:
                         log_action(f"Leverage set to {leverage}x for {symbol}")
                     except Exception as e:
                         log_action(f"Failed to set leverage for {symbol}: {str(e)}")
+                        self.scanning_status.append({"symbol": symbol, "status": f"Failed to set leverage: {str(e)}"})
                         continue
 
                     log_action(f"Fetching candles for {symbol}...")
                     df = await self.get_candles(symbol_mapping[symbol], timeframe='1h', limit=150)
                     if df.empty or len(df) < 150:
                         log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
+                        self.scanning_status.append({"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
                         continue
 
                     log_action(f"Calculating indicators for {symbol}...")
@@ -205,6 +212,12 @@ class ChovusSmartBot:
                         f"Scanned {symbol} | Price: {price:.4f} | Volume: {volume:.2f} | Amount: {amount} | "
                         f"Score: {score:.2f} | Crossover: {crossover} | Fib Zone: {in_fib_zone}"
                     )
+                    self.scanning_status.append({
+                        "symbol": symbol,
+                        "status": f"Scanned | Price: {price:.4f} | Score: {score:.2f}",
+                        "score": score,
+                        "price": price
+                    })
                     self.log_candidate(symbol, price, score)
                     if score > 0.5:
                         await self.place_trade(symbol_mapping[symbol], price, amount)
@@ -214,6 +227,7 @@ class ChovusSmartBot:
                         log_action(f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
                 except Exception as e:
                     log_action(f"Error scanning {symbol}: {str(e)}")
+                    self.scanning_status.append({"symbol": symbol, "status": f"Error: {str(e)}"})
                     continue
 
             pairs.sort(key=lambda x: x[3], reverse=True)
@@ -222,12 +236,13 @@ class ChovusSmartBot:
 
         except Exception as e:
             log_action(f"Error in pair scanning: {str(e)}")
+            self.scanning_status = [{"symbol": "N/A", "status": f"Error in pair scanning: {str(e)}"}]
             return []
 
     async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float, step_size: float) -> float:
         try:
             balance = await self.get_available_balance()
-            target_risk = balance * 0.1 / price  # Koristi 10% balansa
+            target_risk = balance * 0.1 / price
             amount = max(min_qty, min(max_qty, round(target_risk / step_size) * step_size))
 
             market = self.exchange.markets.get(symbol, {})
@@ -247,7 +262,7 @@ class ChovusSmartBot:
             balance = await self.exchange.fetch_balance(params={"type": "future"})
             available = float(balance['USDT'].get('free', 0))
             logger.info(f"Fetched available balance: {available} USDT")
-            set_config("balance", str(available))
+            set_config("balance", str(available))  # Ovo je popravljeno
             return available
         except Exception as e:
             logger.error(f"Error fetching balance: {str(e)}")

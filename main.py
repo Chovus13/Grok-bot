@@ -41,7 +41,7 @@ print(f"🔑 Using API_KEY: {key}")
 app = FastAPI()
 templates = Jinja2Templates(directory="html")
 
-bot = ChovusSmartBot(testnet=True)
+bot = ChovusSmartBot(testnet=False)
 bot_task = None
 
 # CORS Middleware
@@ -323,3 +323,11 @@ async def show_logs(request: Request):
     except Exception as e:
         logger.error(f"Error reading logs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error reading logs: {e}")
+
+@app.get("/api/scanning_status")
+async def get_scanning_status():
+    try:
+        return bot.scanning_status
+    except Exception as e:
+        logger.error(f"Error fetching scanning status: {str(e)}")
+        return [{"symbol": "N/A", "status": "Error fetching status"}]
