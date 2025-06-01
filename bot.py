@@ -123,6 +123,15 @@ class ChovusSmartBot:
         self.positions = []
         self.position_mode = "One-way"
 
+    # bot.py (dodaj u klasu ChovusSmartBot)
+    async def set_margin_type(self, symbol: str, margin_type: str):
+        try:
+            await self.exchange.set_margin_mode(margin_type, symbol)
+            logger.info(f"Set margin type to {margin_type} for {symbol}")
+        except Exception as e:
+            logger.error(f"Error setting margin type for {symbol}: {str(e)}")
+
+
     async def fetch_positions(self):
         """Dohvata trenutne pozicije korisnika."""
         try:
@@ -382,7 +391,10 @@ class ChovusSmartBot:
 
     async def start_bot(self):
         self.running = True
-        # Proveri pozicije i režim pri pokretanju
+        # Postavi margin tip na isolated za sve parove pri pokretanju
+        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
+        for symbol in pairs:
+            await self.set_margin_type(symbol, "ISOLATED")  # Promeni na "CROSS" ako želiš cross margin
         await self.fetch_positions()
         await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
