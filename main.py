@@ -147,18 +147,41 @@ async def set_strategy_endpoint(request: StrategyRequest):
 @app.get("/api/balance")
 async def get_balance():
     try:
-        # Dohvati balans direktno od exchange-a
-        balance = await bot.get_available_balance()
+        balance = await bot.fetch_balance()  # Zameni sa fetch_balance
+        total_balance = get_config("total_balance", "0")
+        total_balance = float(total_balance) if total_balance else 0.0
         return {
-            "wallet_balance": str(balance),
+            "wallet_balance": float(balance),
+            "total_balance": total_balance,
             "score": get_config("score", "0")
         }
     except Exception as e:
         logger.error(f"Error fetching balance: {str(e)}")
         return {
-            "wallet_balance": get_config("balance", "0"),
+            "wallet_balance": float(get_config("balance", "1000")),
+            "total_balance": 0.0,
             "score": get_config("score", "0")
         }
+#
+# @app.get("/api/balance")
+# async def get_balance():
+#     try:
+#         balance = await bot.get_available_balance()  # Ovo treba zameniti
+#         total_balance = get_config("total_balance", "0")
+#         total_balance = float(total_balance) if total_balance else 0.0
+#         return {
+#             "wallet_balance": float(balance),
+#             "total_balance": total_balance,
+#             "score": get_config("score", "0")
+#         }
+#     except Exception as e:
+#         logger.error(f"Error fetching balance: {str(e)}")
+#         return {
+#             "wallet_balance": float(get_config("balance", "1000")),
+#             "total_balance": 0.0,
+#             "score": get_config("score", "0")
+#         }
+
 
 @app.get("/api/trades")
 def get_trades():
