@@ -159,7 +159,7 @@
             const positionsDiv = document.getElementById('positions');
             if (positions.length > 0) {
                 positionsDiv.innerHTML = '<h3>Trenutne pozicije:</h3>' + positions.map(pos => `
-                    <p>Symbol: ${pos.symbol} | Entry Price: ${parseFloat(pos.entryPrice).toFixed(4)} | Position Amt: ${parseFloat(pos.positionAmt).toFixed(4)}</p>
+                    <p>Symbol: ${pos.symbol} | Entry Price: ${parseFloat(pos.entryPrice).toFixed(4)} | Position Amt: ${parseFloat(pos.positionAmt).toFixed(4)} | Margin Type: ${pos.isolated ? 'Isolated' : 'Cross'}</p>
                 `).join('');
             } else {
                 positionsDiv.innerHTML = '<p>Nema aktivnih pozicija.</p>';
