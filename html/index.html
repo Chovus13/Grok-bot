@@ -203,21 +203,24 @@
         }
     }
 
-    async function fetchMarketData() {
-        try {
-            const response = await fetch('/api/market_data?symbol=ETH/BTC');
-            const data = await response.json();
-            document.getElementById('price').textContent = parseFloat(data.price).toFixed(4);
-            document.getElementById('support').textContent = parseFloat(data.support).toFixed(4);
-            document.getElementById('resistance').textContent = parseFloat(data.resistance).toFixed(4);
-            document.getElementById('bid_wall').textContent = parseFloat(data.bid_wall).toFixed(4);
-            document.getElementById('ask_wall').textContent = parseFloat(data.ask_wall).toFixed(4);
-            document.getElementById('trend').textContent = data.trend;
-            updateChart(data);
-        } catch (error) {
-            console.error('Error fetching market data:', error);
+            async function fetchMarketData() {
+            try {
+                const response = await fetch('/api/market_data');
+                const data = await response.json();
+                document.getElementById('price').textContent = parseFloat(data.price).toFixed(4);
+                document.getElementById('support').textContent = parseFloat(data.support).toFixed(4);
+                document.getElementById('resistance').textContent = parseFloat(data.resistance).toFixed(4);
+                document.getElementById('bidWall').textContent = parseFloat(data.bid_wall).toFixed(4);
+                document.getElementById('askWall').textContent = parseFloat(data.ask_wall).toFixed(4);
+                document.getElementById('trend').textContent = data.trend || 'N/A';
+            } catch (error) {
+                console.error('Error fetching market data:', error);
+            }
         }
-    }
+
+        // Ažuriraj podatke svakih 5 sekundi
+        setInterval(fetchMarketData, 5000);
+        fetchMarketData();
 
     async function fetchCandidates() {
         try {

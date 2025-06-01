@@ -11,6 +11,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 import json
+import websockets
 from pprint import pprint
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,43 @@ class ChovusSmartBot:
             logger.info(f"Set position mode to {self.position_mode}")
         except Exception as e:
             logger.error(f"Error setting position mode: {str(e)}")
+
+    async def stream_order_book(self, symbol: str):
+        try:
+            symbol = symbol.replace('/', '').lower()  # Pretvori ETH/BTC u ethbtc
+            uri = f"wss://papi.binance.com/ws/{symbol}@depth20@100ms"  # PAPI WebSocket za order book
+            async with websockets.connect(uri) as websocket:
+                while self.running:
+                    message = await websocket.recv()
+                    data = json.loads(message)
+                    self.order_book = {
+                        "bids": {float(price): float(amount) for price, amount in data['bids'][:5]},
+                        "asks": {float(price): float(amount) for price, amount in data['asks'][:5]},
+                        "lastUpdateId": data['lastUpdateId']
+                    }
+                    # Ažuriraj UI podatke
+                    price = (list(self.order_book['bids'].keys())[0] + list(self.order_book['asks'].keys())[0]) / 2
+                    set_config("price", str(price))
+                    set_config("bid_wall", str(min(self.order_book['bids'].keys())))
+                    set_config("ask_wall", str(max(self.order_book['asks'].keys())))
+                    logger.debug(f"Updated order book for {symbol}: {self.order_book}")
+                    await asyncio.sleep(0.1)  # Spreči preopterećenje
+        except Exception as e:
+            logger.error(f"Error in WebSocket stream for {symbol}: {str(e)}")
+            self.order_book = {"bids": {}, "asks": {}, "lastUpdateId": 0}
+
+    async def start_bot(self):
+        self.running = True
+        await self.set_position_mode(False)  # One-way mod
+        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT").split(",")
+        for symbol in pairs:
+            await self.set_margin_type(symbol, "ISOLATED")
+        await self.fetch_positions()
+        await self.fetch_position_mode()
+        self._bot_task = asyncio.create_task(self.run())
+        # Pokreni WebSocket stream za ETH/BTC
+        asyncio.create_task(self.stream_order_book("ETH/BTC"))
+        logger.info("Bot started")
 
     async def start_bot(self):
         self.running = True

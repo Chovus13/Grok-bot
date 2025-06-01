@@ -183,6 +183,7 @@ async def get_balance():
 #         }
 
 
+
 @app.get("/api/trades")
 def get_trades():
     try:
@@ -203,18 +204,49 @@ async def send_telegram_endpoint(msg: TelegramMessage):
     return await bot._send_telegram_message(msg.message)
 
 @app.get("/api/market_data")
-async def get_market_data(symbol: str = "ETH/BTC"):
+async def get_market_data():
     try:
-        ticker = await bot.exchange.fetch_ticker(symbol)
-        df = await bot.get_candles(symbol)
-        high = df['high'].rolling(50).max().iloc[-1]
-        low = df['low'].rolling(50).min().iloc[-1]
-        fib_range = high - low
-        support = high - fib_range * 0.618
-        resistance = high - fib_range * 0.382
-        smma = bot.calc_smma(df['close'], 5)
-        wma = bot.calc_wma(df['close'], 144)
-        trend = "Bullish" if smma.iloc[-1] > wma.iloc[-1] else "Bearish"
+        price = float(get_config("price", "0.0239"))
+        bid_wall = float(get_config("bid_wall", "0.0238"))
+        ask_wall = float(get_config("ask_wall", "0.0239"))
+        # Jednostavna logika za support/resistance i trend
+        support = bid_wall * 1.005  # 0.5% iznad bid wall-a
+        resistance = ask_wall * 1.015  # 1.5% iznad ask wall-a
+        trend = "Bullish" if price > (support + resistance) / 2 else "Bearish"
+        return {
+            "price": price,
+            "support": support,
+            "resistance": resistance,
+            "bid_wall": bid_wall,
+            "ask_wall": ask_wall,
+            "trend": trend
+        }
+    except Exception as e:
+        logger.error(f"Error fetching market data: {str(e)}")
+        return {
+            "price": 0.0239,
+            "support": 0.0243,
+            "resistance": 0.0245,
+            "bid_wall": 0.0238,
+            "ask_wall": 0.0239,
+            "trend": "Bearish"
+        }
+
+
+
+# @app.get("/api/market_data")
+# async def get_market_data(symbol: str = "ETH/BTC"):
+#     try:
+#         ticker = await bot.exchange.fetch_ticker(symbol)
+#         df = await bot.get_candles(symbol)
+#         high = df['high'].rolling(50).max().iloc[-1]
+#         low = df['low'].rolling(50).min().iloc[-1]
+#         fib_range = high - low
+#         support = high - fib_range * 0.618
+#         resistance = high - fib_range * 0.382
+#         smma = bot.calc_smma(df['close'], 5)
+#         wma = bot.calc_wma(df['close'], 144)
+#         trend = "Bullish" if smma.iloc[-1] > wma.iloc[-1] else "Bearish"
 
         # Dohvati order book podatke
         order_book = await bot.exchange.fetch_order_book(symbol, limit=100)
