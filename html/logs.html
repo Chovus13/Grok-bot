@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Logs</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
+        h1 {
+            color: #333;
+        }
+        .log-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .log-entry {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            font-family: monospace;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-info {
+            background-color: #e0f7fa;
+        }
+        .log-error {
+            background-color: #ffebee;
+            color: #d32f2f;
+            font-weight: bold;
+        }
+        .log-warning {
+            background-color: #fff3e0;
+            color: #ef6c00;
+        }
+    </style>
+</head>
+<body>
+    <div class="log-container">
+        <h1>Bot Logs</h1>
+        <div id="logs">
+            {% for log in logs %}
+            <div class="log-entry {% if 'INFO' in log.level %}log-info{% elif 'ERROR' in log.level %}log-error{% elif 'WARNING' in log.level %}log-warning{% endif %}">
+                [{{ log.timestamp }}] {{ log.level }}: {{ log.message }}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>

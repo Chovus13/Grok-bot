@@ -231,7 +231,7 @@ async function fetchSignals() {
         sendCommand('/api/set_manual_amount', 'POST', { amount: parseFloat(amount) });
     }
 
-    function initChart() {
+        function initChart() {
         const ctx = document.getElementById('orderbookChart').getContext('2d');
         chart = new Chart(ctx, {
             type: 'line',
@@ -239,7 +239,9 @@ async function fetchSignals() {
                 datasets: [
                     { label: 'Price', data: [], borderColor: 'blue', fill: false },
                     { label: 'Support', data: [], borderColor: 'green', fill: false, stepped: true },
-                    { label: 'Resistance', data: [], borderColor: 'red', fill: false, stepped: true }
+                    { label: 'Resistance', data: [], borderColor: 'red', fill: false, stepped: true },
+                    { label: 'Bid Wall', data: [], borderColor: 'cyan', fill: false, stepped: true },
+                    { label: 'Ask Wall', data: [], borderColor: 'magenta', fill: false, stepped: true }
                 ]
             },
             options: {
@@ -258,6 +260,8 @@ async function fetchSignals() {
         chart.data.datasets[0].data.push({ x: now, y: data.price });
         chart.data.datasets[1].data.push({ x: now, y: data.support });
         chart.data.datasets[2].data.push({ x: now, y: data.resistance });
+        chart.data.datasets[3].data.push({ x: now, y: data.bid_wall });
+        chart.data.datasets[4].data.push({ x: now, y: data.ask_wall });
         if (chart.data.datasets[0].data.length > 50) {
             chart.data.datasets.forEach(dataset => dataset.data.shift());
         }
