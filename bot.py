@@ -5,18 +5,19 @@ import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
 import os
-from config import get_config, set_config
+from config import get_config
 from settings import DB_PATH
 import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
+import json
 
-# Podesi logging sa rotacijom
+# Podesi logging na DEBUG
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG)  # Promenjeno sa INFO na DEBUG
 
 # Kreiraj RotatingFileHandler
-file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)  # 10 MB po fajlu, čuvaj 5 backup fajlova
+file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
@@ -48,10 +49,9 @@ def _init_db_sync():
                 value TEXT
             )
         """)
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "10"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "10"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_SOL_USDT", "10"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_key", os.getenv("API_KEY", "")))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_secret", os.getenv("API_SECRET", "")))
@@ -95,51 +95,21 @@ class ChovusSmartBot:
             'enableRateLimit': True,
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com'  # Ispravan futures testnet
+                    'fapi': 'https://testnet.binancefuture.com'  # Prvo testiramo na testnetu
                 }
             } if testnet else {
                 'api': {
-                    'fapi': 'https://fapi.binance.com'
+                    'fapi': 'https://fapi.binance.com'  # Live API za pravi novac
                 }
             }
         })
-        self.exchange.set_sandbox_mode(True)  # Eksplicitno uključi sandbox mod
+        self.exchange.set_sandbox_mode(testnet)  # Uključi sandbox mod samo ako je testnet
         self.running = False
         self._bot_task = None
         self.current_strategy = "default"
 
-
-
-
-    async def place_trade(self, symbol: str, price: float, amount: float):
-        try:
-            # Postavi limit order za kupovinu
-            order = await self.exchange.create_limit_buy_order(symbol, amount, price)
-            logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
-
-            # Postavi TP (2% iznad cene kupovine)
-            tp_price = price * 1.02
-            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price, params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
-            logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
-
-            # Postavi SL (1% ispod cene kupovine)
-            sl_price = price * 0.99
-            sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
-            logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
-
-            # Loguj trejd u bazi
-            with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0) as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
-                conn.commit()
-
-            return order
-        except Exception as e:
-            logger.error(f"Error placing trade for {symbol}: {str(e)}")
-            return None
-
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
-        log_action = logger.info
+        log_action = logger.debug  # Promenjeno na DEBUG
         log_action("Starting pair scanning for USDⓈ-M Futures...")
 
         try:
@@ -148,26 +118,40 @@ class ChovusSmartBot:
             markets = {m['symbol']: m for m in exchange_info if m['type'] == 'future' and m['quote'] == 'USDT'}
             log_action(f"Available futures markets: {list(markets.keys())}")
 
-            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT")
+            # Normalizuj simbole u markets (ukloni sufikse poput :USDT-250627)
+            normalized_markets = {}
+            for symbol, market in markets.items():
+                base_symbol = symbol.split(':')[0]  # Uzmi osnovni simbol (npr. BTC/USDT)
+                normalized_markets[base_symbol] = market
+            log_action(f"Normalized markets: {list(normalized_markets.keys())}")
+
+            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
-                available_pairs = "BTC/USDT,ETH/USDT,SOL/USDT"
-                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,SOL/USDT")
+                available_pairs = "BTC/USDT,ETH/USDT"
+                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT")
             all_futures = available_pairs.split(",") if available_pairs else []
-            all_futures = [p for p in all_futures if p in markets]
+            all_futures = [p for p in all_futures if p in normalized_markets]
             log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
 
             if not all_futures:
                 log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
                 return []
 
-            log_action("Fetching tickers...")
+            # Mapiranje osnovnih simbola na stvarne simbole sa sufiksima
+            symbol_mapping = {base_symbol: symbol for symbol, base_symbol in [(s, s.split(':')[0]) for s in markets.keys()]}
+
+            log_action("Fetching tickers using WebSocket...")
             try:
-                tickers = await self.exchange.fetch_tickers(all_futures)
+                tickers = {}
+                async for ticker in self.exchange.watch_tickers([symbol_mapping[s] for s in all_futures]):
+                    base_symbol = ticker['symbol'].split(':')[0]
+                    tickers[base_symbol] = ticker
+                    if len(tickers) == len(all_futures):
+                        break
                 log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
-                await asyncio.sleep(0.5)
             except Exception as e:
-                log_action(f"Error fetching tickers: {str(e)}")
+                log_action(f"Error fetching tickers via WebSocket: {str(e)}")
                 return []
 
             pairs = []
@@ -184,7 +168,7 @@ class ChovusSmartBot:
                         log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
                         continue
 
-                    market = markets.get(symbol, {})
+                    market = normalized_markets.get(symbol, {})
                     lot_size = next((f for f in market.get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
                     price_filter = next((f for f in market.get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
 
@@ -197,16 +181,16 @@ class ChovusSmartBot:
                         log_action(f"Invalid amount for {symbol}, skipping.")
                         continue
 
-                    leverage = int(get_config(f"leverage_{symbol.replace('/', '_')}", 10))
+                    leverage = int(get_config(f"leverage_{symbol.replace('/', '_')}", 3))
                     try:
-                        await self.exchange.set_leverage(leverage, symbol=symbol)
+                        await self.exchange.set_leverage(leverage, symbol=symbol_mapping[symbol])
                         log_action(f"Leverage set to {leverage}x for {symbol}")
                     except Exception as e:
                         log_action(f"Failed to set leverage for {symbol}: {str(e)}")
                         continue
 
                     log_action(f"Fetching candles for {symbol}...")
-                    df = await self.get_candles(symbol, timeframe='1h', limit=150)
+                    df = await self.get_candles(symbol_mapping[symbol], timeframe='1h', limit=150)
                     if df.empty or len(df) < 150:
                         log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
                         continue
@@ -222,8 +206,8 @@ class ChovusSmartBot:
                         f"Score: {score:.2f} | Crossover: {crossover} | Fib Zone: {in_fib_zone}"
                     )
                     self.log_candidate(symbol, price, score)
-                    if score > 0.5:  # Labava taktika
-                        await self.place_trade(symbol, price, amount)
+                    if score > 0.5:
+                        await self.place_trade(symbol_mapping[symbol], price, amount)
                         log_action(f"Trade placed for {symbol} with score {score:.2f}")
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
@@ -243,7 +227,7 @@ class ChovusSmartBot:
     async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float, step_size: float) -> float:
         try:
             balance = await self.get_available_balance()
-            target_risk = balance * 0.1 / price
+            target_risk = balance * 0.1 / price  # Koristi 10% balansa
             amount = max(min_qty, min(max_qty, round(target_risk / step_size) * step_size))
 
             market = self.exchange.markets.get(symbol, {})
@@ -263,7 +247,6 @@ class ChovusSmartBot:
             balance = await self.exchange.fetch_balance(params={"type": "future"})
             available = float(balance['USDT'].get('free', 0))
             logger.info(f"Fetched available balance: {available} USDT")
-            # Ažuriraj balans u konfiguraciji
             set_config("balance", str(available))
             return available
         except Exception as e:
@@ -271,6 +254,29 @@ class ChovusSmartBot:
             fallback = float(get_config("balance", "0"))
             logger.warning(f"Using fallback balance: {fallback} USDT")
             return fallback
+
+    async def place_trade(self, symbol: str, price: float, amount: float):
+        try:
+            order = await self.exchange.create_limit_buy_order(symbol, amount, price)
+            logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
+
+            tp_price = price * 1.02
+            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price, params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
+            logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
+
+            sl_price = price * 0.99
+            sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
+            logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
+
+            with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0) as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
+                conn.commit()
+
+            return order
+        except Exception as e:
+            logger.error(f"Error placing trade for {symbol}: {str(e)}")
+            return None
 
     async def start_bot(self):
         self.running = True
@@ -298,7 +304,7 @@ class ChovusSmartBot:
 
     def set_leverage(self, leverage: int, symbol: str = None):
         if symbol is None:
-            pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
+            pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
             for sym in pairs:
                 try:
                     asyncio.create_task(self.exchange.set_leverage(leverage, symbol=sym))
@@ -386,7 +392,6 @@ class ChovusSmartBot:
             cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
             conn.commit()
 
-            # Učitaj trenutne kandidate i eksportuj u JSON
             cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
             candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
             with open("user_data/candidates.json", "w") as f:

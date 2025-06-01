@@ -305,21 +305,20 @@ async def db_dump():
 
 # Novi endpoint za prikazivanje logova na HTML stranici
 @app.get("/logs", response_class=HTMLResponse)
+@app.get("/logs", response_class=HTMLResponse)
 async def show_logs(request: Request):
     try:
         logs = []
         with open("bot.log", "r") as f:
             lines = f.readlines()
             for line in lines[-100:]:  # Prikazujemo poslednjih 100 logova
-                # Parsiraj log liniju: format je "2025-06-01 04:06:13,498 - LEVEL - Message"
                 parts = line.strip().split(" - ", 2)
                 if len(parts) != 3:
                     continue
                 timestamp, level, message = parts
-                # Filtriraj DEBUG poruke osim ako nisu bitne za skeniranje
-                if level == "DEBUG" and not ("Scanned" in message or "Fetching" in message or "Starting pair scanning" in message):
-                    continue
-                logs.append({"timestamp": timestamp, "level": level, "message": message})
+                # Filtriraj poruke: uključi INFO, WARNING, ERROR i određene DEBUG poruke
+                if level in ["INFO", "WARNING", "ERROR"] or (level == "DEBUG" and any(keyword in message for keyword in ["Available futures markets", "Raw available_pairs", "Scanning", "Scanned", "Fetching", "Starting pair scanning"])):
+                    logs.append({"timestamp": timestamp, "level": level, "message": message})
         return templates.TemplateResponse("logs.html", {"request": request, "logs": logs})
     except Exception as e:
         logger.error(f"Error reading logs: {str(e)}")
