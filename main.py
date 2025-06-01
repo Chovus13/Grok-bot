@@ -365,6 +365,7 @@ async def get_balance():
         balance = await bot.get_available_balance()
         return {
             "wallet_balance": str(balance),
+
             "total_balance": get_config("total_balance", "0"),
             "score": get_config("score", "0")
         }

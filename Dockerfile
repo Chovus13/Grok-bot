@@ -23,6 +23,7 @@ RUN mkdir -p /app/logs && \
     touch /app/logs/bot.log && \
     touch /app/logs/error.log && \
     touch /app/user_data/candidates.json && \
+    touch /app/user_data/chovusbot.db && \
     touch /app/bot.log && \
     touch /app/logs/access.log
 
@@ -36,9 +37,10 @@ EXPOSE 8080
 # Kreiraj običnog korisnika
 #USER nginx
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
-    chmod -R 0666 /app/user_data && \
+    chown -R 1000:1000 /app/user_data/ && \
+    chmod -R 666 /app/user_data/ && \
     chmod  666 /app/bot.log && \
-    chmod -R 0755 /usr/share/nginx/html /app/user_data /app/logs bot.log
+    chmod -R 0755 /usr/share/nginx/html /app/logs bot.log
 ## /app/logs && \
 # Prebaci na nginx korisnika
 # proveri ko su vlasnici i permisions
