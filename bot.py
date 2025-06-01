@@ -1,6 +1,5 @@
 # bot.py
 import asyncio
-import logging
 import sqlite3
 import pandas as pd
 from ccxt.async_support import binance
@@ -8,9 +7,29 @@ from typing import List, Tuple
 import os
 from config import get_config
 from settings import DB_PATH
-import json
+import logging
+from logging.handlers import RotatingFileHandler
+from dotenv import load_dotenv
 
+# Podesi logging sa rotacijom
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Kreiraj RotatingFileHandler
+file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)  # 10 MB po fajlu, čuvaj 5 backup fajlova
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Dodaj StreamHandler za konzolu
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.DEBUG)
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Dodaj handlere u logger
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
+
+load_dotenv()
 
 
 async def init_db():
@@ -81,11 +100,11 @@ class ChovusSmartBot:
             'enableRateLimit': True,
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com'
+                    'fapi': 'https://testnet.binance.vision'
                 }
             } if testnet else {
                 'api': {
-                    'fapi': 'https://fapi.binance.com'
+                    'fapi': 'https://testnet.binancefuture.com'
                 }
             }
         })

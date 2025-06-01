@@ -38,7 +38,7 @@ EXPOSE 8080
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
     chmod -R 0666 /app/user_data && \
     chmod  666 /app/bot.log && \
-    chmod -R 0755 /usr/share/nginx/html
+    chmod -R 0755 /usr/share/nginx/html /app/user_data /app/logs bot.log
 ## /app/logs && \
 # Prebaci na nginx korisnika
 # proveri ko su vlasnici i permisions

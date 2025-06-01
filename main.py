@@ -12,6 +12,7 @@ import sqlite3
 from bot import ChovusSmartBot, init_db
 from config import get_config, set_config
 from settings import DB_PATH
+
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -31,7 +32,8 @@ stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(m
 
 # Dodaj handlere u logger
 logger.addHandler(file_handler)
-logger.addHandler(stream_handler
+logger.addHandler(stream_handler)
+
 load_dotenv()
 
 key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
@@ -42,6 +44,23 @@ templates = Jinja2Templates(directory="html")
 
 bot = ChovusSmartBot(testnet=True)
 bot_task = None
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
+
+# --- Middleware ---
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url}")
+    response = await call_next(request)
+    return response
 
 
 @asynccontextmanager
@@ -67,21 +86,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"]
-)
 
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"Incoming request: {request.method} {request.url}")
-    response = await call_next(request)
-    return response
 
 
 class TelegramMessage(BaseModel):
