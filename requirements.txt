@@ -6,11 +6,13 @@ python-dotenv>=1.1.0
 aiohttp>=3.10.10
 python-telegram-bot>=22.1
 pydantic>=2.11.5
-ccxt>=4.4.86
+ccxt>=4.4.88
 Jinja2>=3.1.6
 schedule>=1.2.2
 pyyaml
-websockets
+websockets>=15.0.1
 asyncio
 requests==2.32.3
 python-telegram-bot>=22.1
+aiofiles>=24.1.0
+aiosqlite>=0.21.0

@@ -15,7 +15,7 @@ COPY . .
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN useradd -m -u 1000 appuser
 COPY html/index.html /usr/share/nginx/html
 RUN mkdir -p /app/logs && \
     mkdir -p /app/html && \
@@ -23,7 +23,6 @@ RUN mkdir -p /app/logs && \
     touch /app/logs/bot.log && \
     touch /app/logs/error.log && \
     touch /app/user_data/candidates.json && \
-    touch /app/user_data/chovusbot.db && \
     touch /app/bot.log && \
     touch /app/logs/access.log
 
@@ -37,16 +36,16 @@ EXPOSE 8080
 # Kreiraj običnog korisnika
 #USER nginx
 RUN chown -R "$USER":www-data /usr/share/nginx/html && \
-    chown -R appuser:appuser /app/user_data/ && \
-    chmod -R 666 /app/user_data/ && \
-    chmod  666 /app/bot.log && \
-    chmod -R 0755 /usr/share/nginx/html /app/logs bot.log
+    chmod  777 /app/bot.log && \
+    chmod -R 0755 /usr/share/nginx/html && \
+    chown -R appuser:appuser /app/user_data && \
+    chmod -R 777 /app/user_data && \
+    chmod -R 0777  /app/logs
+
 ## /app/logs && \
 # Prebaci na nginx korisnika
 # proveri ko su vlasnici i permisions
 #RUN chown -R "$USER":www-data /app/logs && \
 #    chmod -R 0777 /app/logs/ \
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-RUN chown -R appuser:appuser /app/user_data/ && \
-    chmod -R 666 /app/user_data/ /app/bot.log
 USER appuser
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

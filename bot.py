@@ -11,7 +11,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 import json
-import websockets
 from pprint import pprint
 
 logger = logging.getLogger(__name__)
@@ -49,7 +48,7 @@ async def init_db():
         raise
 
 def _init_db_sync():
-    with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0) as conn:
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS config (
@@ -57,7 +56,7 @@ def _init_db_sync():
                 value TEXT
             )
         """)
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
@@ -103,11 +102,15 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Ostaje 'future' jer PM podržava futures
+                'defaultType': 'future',  # Eksplicitno postavljamo futures
             },
             'urls': {
                 'api': {
-                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'  # Prebaci na PAPI
+                    'fapi': 'https://testnet.binancefuture.com'
+                }
+            } if testnet else {
+                'api': {
+                    'fapi': 'https://fapi.binance.com'
                 }
             }
         })
@@ -120,163 +123,41 @@ class ChovusSmartBot:
         self.positions = []
         self.position_mode = "One-way"
 
-    # bot.py (dodaj u klasu ChovusSmartBot)
-    async def set_margin_type(self, symbol: str, margin_type: str):
-        try:
-            await self.exchange.set_margin_mode(margin_type, symbol)
-            logger.info(f"Set margin type to {margin_type} for {symbol}")
-        except Exception as e:
-            logger.error(f"Error setting margin type for {symbol}: {str(e)}")
-
-    # bot.py (dodaj u klasu ChovusSmartBot)
-    async def set_position_mode(self, dual_side: bool):
-        try:
-            await self.exchange.fapiprivate_post_positionside_dual(
-                {"dualSidePosition": "true" if dual_side else "false"})
-            self.position_mode = "Hedge" if dual_side else "One-way"
-            logger.info(f"Set position mode to {self.position_mode}")
-        except Exception as e:
-            logger.error(f"Error setting position mode: {str(e)}")
-
-    async def stream_order_book(self, symbol: str):
-        try:
-            symbol = symbol.replace('/', '').lower()  # Pretvori ETH/BTC u ethbtc
-            uri = f"wss://papi.binance.com/ws/{symbol}@depth20@100ms"  # PAPI WebSocket za order book
-            async with websockets.connect(uri) as websocket:
-                while self.running:
-                    message = await websocket.recv()
-                    data = json.loads(message)
-                    self.order_book = {
-                        "bids": {float(price): float(amount) for price, amount in data['bids'][:5]},
-                        "asks": {float(price): float(amount) for price, amount in data['asks'][:5]},
-                        "lastUpdateId": data['lastUpdateId']
-                    }
-                    # Ažuriraj UI podatke
-                    price = (list(self.order_book['bids'].keys())[0] + list(self.order_book['asks'].keys())[0]) / 2
-                    set_config("price", str(price))
-                    set_config("bid_wall", str(min(self.order_book['bids'].keys())))
-                    set_config("ask_wall", str(max(self.order_book['asks'].keys())))
-                    logger.debug(f"Updated order book for {symbol}: {self.order_book}")
-                    await asyncio.sleep(0.1)  # Spreči preopterećenje
-        except Exception as e:
-            logger.error(f"Error in WebSocket stream for {symbol}: {str(e)}")
-            self.order_book = {"bids": {}, "asks": {}, "lastUpdateId": 0}
-
-    async def start_bot(self):
-        self.running = True
-        await self.set_position_mode(False)  # One-way mod
-        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT").split(",")
-        for symbol in pairs:
-            await self.set_margin_type(symbol, "ISOLATED")
-        await self.fetch_positions()
-        await self.fetch_position_mode()
-        self._bot_task = asyncio.create_task(self.run())
-        # Pokreni WebSocket stream za ETH/BTC
-        asyncio.create_task(self.stream_order_book("ETH/BTC"))
-        logger.info("Bot started")
-
-    async def start_bot(self):
-        self.running = True
-        # Postavi Hedge mod
-        await self.set_position_mode(True)  # Promeni na False ako želiš One-way
-        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
-        for symbol in pairs:
-            await self.set_margin_type(symbol, "ISOLATED")  # Ili "CROSS"
-        await self.fetch_positions()
-        await self.fetch_position_mode()
-        self._bot_task = asyncio.create_task(self.run())
-        asyncio.create_task(self.maintain_order_book("ETHBTC"))
-        logger.info("Bot started")
-
-    async def fetch_balance(self):
-        try:
-            # Ručno pozovi PAPI endpoint /papi/v1/balance
-            balance = await self.exchange.fetch('papi/v1/balance', params={'recvWindow': 5000})
-            if not isinstance(balance, list) or not balance:
-                raise ValueError("Balance response is empty or not a list")
-            usdt_balance = next((item for item in balance if item.get('asset') == 'USDT'), None)
-            if not usdt_balance:
-                raise ValueError("USDT balance not found in response")
-            available_balance = float(usdt_balance.get('balance', 0))
-            total_balance = float(usdt_balance.get('crossWalletBalance', 0))
-            set_config("balance", str(available_balance))
-            set_config("total_balance", str(total_balance))
-            logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
-            return available_balance
-        except Exception as e:
-            logger.error(f"Error fetching balance: {str(e)}")
-            fallback_balance = float(get_config("balance", "1000"))
-            logger.warning(f"Using fallback balance: {fallback_balance} USDT")
-            return fallback_balance
-
     async def fetch_positions(self):
+        """Dohvata trenutne pozicije korisnika."""
         try:
-            # Ručno pozovi PAPI endpoint /papi/v1/um/positionRisk
-            positions = await self.exchange.fetch('papi/v1/um/positionRisk', params={'recvWindow': 5000})
-            if not isinstance(positions, list):
-                raise ValueError("Positions response is not a list")
-            self.positions = [
-                {
-                    "symbol": pos.get('symbol', ''),
-                    "entryPrice": float(pos.get('entryPrice', 0)),
-                    "positionAmt": float(pos.get('positionAmt', 0)),
-                    "isolated": pos.get('marginType', 'cross') == 'isolated'
-                }
-                for pos in positions if float(pos.get('positionAmt', 0)) != 0  # Samo aktivne pozicije
-            ]
-            logger.info(f"Fetched positions: {self.positions}")
+            self.positions = await self.exchange.fapiprivatev2_get_positionrisk()
+            logger.info("Fetched positions:\n" + table(self.positions))
             return self.positions
         except Exception as e:
             logger.error(f"Error fetching positions: {str(e)}")
-            self.positions = []
             return []
 
-    # return {"mode": self.position_mode}
+    async def fetch_position_mode(self):
+        """Proverava da li je korisnik u One-way ili Hedge modu."""
+        try:
+            response = await self.exchange.fapiprivate_get_positionside_dual()
+            self.position_mode = "Hedge" if response['dualSidePosition'] else "One-way"
+            logger.info(f"Position mode: {self.position_mode}")
+            return self.position_mode
+        except Exception as e:
+            logger.error(f"Error fetching position mode: {str(e)}")
+            return "Unknown"
 
-    # async def fetch_positions(self):
-    #     try:
-    #         positions = await self.exchange.fetch_positions()
-    #         self.positions = [
-    #             {
-    #                 "symbol": pos['symbol'],
-    #                 "entryPrice": pos.get('entryPrice', 0),
-    #                 "positionAmt": pos.get('positionAmt', 0),
-    #                 "isolated": pos.get('isolated', False)
-    #             }
-    #             for pos in positions
-    #         ]
-    #         logger.info(f"Fetched positions: {self.positions}")
-    #         return self.positions
-    #     except Exception as e:
-    #         logger.error(f"Error fetching positions: {str(e)}")
-    #         self.positions = []
-    #         return []
-    #
-    # async def fetch_position_mode(self):
-    #     try:
-    #         mode = await self.exchange.fapiprivate_get_positionside_dual()
-    #         self.position_mode = "Hedge" if mode['dualSidePosition'] else "One-way"
-    #         logger.info(f"Position mode: {self.position_mode}")
-    #         return {"mode": self.position_mode}
-    #     except Exception as e:
-    #         logger.error(f"Error fetching position mode: {str(e)}")
-    #         self.position_mode = "Unknown"
-    #         return {"mode": "Unknown"}
-    #
-    # async def get_available_balance(self):
-    #     try:
-    #         balance = await self.exchange.fetch_balance()
-    #         available_balance = balance['USDT']['free']
-    #         set_config("balance", str(available_balance))
-    #         total_balance = balance['USDT']['total']
-    #         set_config("total_balance", str(total_balance))
-    #         logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
-    #         return available_balance
-    #     except Exception as e:
-    #         logger.error(f"Error fetching balance: {str(e)}")
-    #         fallback_balance = float(get_config("balance", "1000"))
-    #         logger.warning(f"Using fallback balance: {fallback_balance} USDT")
-    #         return fallback_balance
+    async def get_available_balance(self) -> float:
+        try:
+            balance = await self.exchange.fetch_balance(params={"type": "future"})
+            available = float(balance['USDT'].get('free', 0))
+            total = float(balance['USDT'].get('total', 0))
+            logger.info(f"Fetched available balance: {available} USDT | Total: {total} USDT")
+            set_config("balance", str(available))
+            set_config("total_balance", str(total))
+            return available
+        except Exception as e:
+            logger.error(f"Error fetching balance: {str(e)}")
+            fallback = float(get_config("balance", "0"))
+            logger.warning(f"Using fallback balance: {fallback} USDT")
+            return fallback
 
     async def maintain_order_book(self, symbol="ETHBTC"):
         try:
@@ -334,7 +215,6 @@ class ChovusSmartBot:
             "asks": sorted([[price, amount] for price, amount in self.order_book["asks"].items()])[:10]
         }
 
-    # bot.py (ažuriraj _scan_pairs)
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
         log_action = logger.debug
         log_action("Starting pair scanning for USDⓈ-M Futures...")
@@ -342,43 +222,34 @@ class ChovusSmartBot:
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
-            markets = {
-                m['symbol']: m for m in self.exchange.markets.values()
-                if m['type'] == 'future' and m['quote'] in ['USDT', 'BTC'] and ':' not in m['symbol']
-            }
-            log_action(f"Available perpetual futures markets: {list(markets.keys())[:10]}... (total: {len(markets)})")
+            markets = {m['symbol']: m for m in self.exchange.markets.values() if m['type'] == 'future' and m['quote'] == 'USDT'}
+            log_action(f"Available futures markets: {list(markets.keys())}")
 
             normalized_markets = markets
 
-            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT")
+            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
-                available_pairs = "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"
-                set_config("available_pairs", available_pairs)
-                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT")
+                available_pairs = "BTC/USDT,ETH/USDT"
+                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT")
             all_futures = available_pairs.split(",") if available_pairs else []
-            all_futures = [p.strip().upper() for p in all_futures if p.strip()]
-            log_action(f"Normalized pairs to scan: {all_futures}")
-
             all_futures = [p for p in all_futures if p in normalized_markets]
-            log_action(f"Valid futures pairs after filtering: {all_futures}")
+            log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
 
             if not all_futures:
-                log_action(
-                    "No valid USDⓈ-M perpetual pairs found in markets. Available markets may not include perpetual futures.")
-                self.scanning_status = [{"symbol": "N/A", "status": "No perpetual pairs to scan"}]
+                log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
+                self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
                 return []
 
             symbol_mapping = {symbol: symbol for symbol in all_futures}
 
-            log_action("Fetching tickers...")
+            log_action("Fetching tickers using WebSocket...")
             try:
                 tickers = {}
                 for symbol in all_futures:
                     ticker = await self.exchange.fetch_ticker(symbol)
                     tickers[symbol] = ticker
-                    log_action(f"Fetched ticker for {symbol}: {ticker}")
-                log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())}...")
+                log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
                 log_action(f"Error fetching tickers: {str(e)}")
                 self.scanning_status = [{"symbol": "N/A", "status": f"Error fetching tickers: {str(e)}"}]
@@ -398,15 +269,12 @@ class ChovusSmartBot:
                     volume = ticker.get('quoteVolume', 0)
                     if not (volume and price and price > 0):
                         log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
-                        self.scanning_status.append(
-                            {"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
+                        self.scanning_status.append({"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
                         continue
 
                     market = normalized_markets.get(symbol, {})
-                    lot_size = next(
-                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
-                    price_filter = next(
-                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
+                    lot_size = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
+                    price_filter = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
 
                     min_qty = float(lot_size.get('minQty', 0))
                     max_qty = float(lot_size.get('maxQty', float('inf')))
@@ -431,8 +299,7 @@ class ChovusSmartBot:
                     df = await self.get_candles(symbol_mapping[symbol], timeframe='1h', limit=150)
                     if df.empty or len(df) < 150:
                         log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
-                        self.scanning_status.append(
-                            {"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
+                        self.scanning_status.append({"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
                         continue
 
                     log_action(f"Calculating indicators for {symbol}...")
@@ -452,13 +319,12 @@ class ChovusSmartBot:
                         "price": price
                     })
                     self.log_candidate(symbol, price, score)
-                    if score > 0.2:  # Smanjeno na 0.2 za testiranje
+                    if score > 0.5:
                         await self.place_trade(symbol_mapping[symbol], price, amount)
-                        log_action(f"Trade placed for {symbol} with score {score:.2f}")  # Popravljena linija
+                        log_action(f"Trade placed for {symbol} with score {score:.2f}")
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
-                        log_action(
-                            f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
+                        log_action(f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
                 except Exception as e:
                     log_action(f"Error scanning {symbol}: {str(e)}")
                     self.scanning_status.append({"symbol": symbol, "status": f"Error: {str(e)}"})
@@ -516,10 +382,7 @@ class ChovusSmartBot:
 
     async def start_bot(self):
         self.running = True
-        # Postavi margin tip na isolated za sve parove pri pokretanju
-        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
-        for symbol in pairs:
-            await self.set_margin_type(symbol, "ISOLATED")  # Promeni na "CROSS" ako želiš cross margin
+        # Proveri pozicije i režim pri pokretanju
         await self.fetch_positions()
         await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
@@ -628,10 +491,9 @@ class ChovusSmartBot:
         weights = pd.Series(range(1, period + 1))
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
-    # bot.py (ažuriraj log_candidate)
     def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
             cursor = conn.cursor()
             cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
             conn.commit()
@@ -640,10 +502,8 @@ class ChovusSmartBot:
             candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
             with open("user_data/candidates.json", "w") as f:
                 json.dump(candidates, f, indent=4)
-            logger.info(f"Updated candidates.json with {len(candidates)} candidates")
 
             conn.close()
             logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
         except Exception as e:
             logger.error(f"Error logging candidate for {symbol}: {str(e)}")
-            raise
