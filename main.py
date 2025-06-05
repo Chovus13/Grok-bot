@@ -65,7 +65,7 @@ async def log_requests(request: Request, call_next):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    await init_db()  # Inicijalizuj bazu asinhrono
+    await init_db()
     global bot
     bot = ChovusSmartBot()
     await bot.start_bot()

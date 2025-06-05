@@ -53,6 +53,7 @@ async def init_db():
         logger.error(f"Error initializing database: {str(e)}")
         raise
 
+
 ### Prelazak_na_PAPI
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
