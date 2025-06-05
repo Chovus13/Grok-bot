@@ -575,26 +575,49 @@ class ChovusSmartBot:
         weights = pd.Series(range(1, period + 1))
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
-    async def log_candidate(self, symbol: str, price: float, score: float):
-        try:
-            timestamp = int(time.time())
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("INSERT INTO candidates (symbol, price, score, timestamp) VALUES (?, ?, ?, ?)",
-                                 (symbol, price, score, timestamp))
-                await db.commit()
-            logger.debug(f"Logged candidate to DB: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
-        except Exception as e:
-            logger.error(f"Error logging candidate to DB: {str(e)}")
 
-    async def place_trade(self, symbol: str, price: float, amount: float):
-        try:
-            order = await self.exchange.create_market_buy_order(symbol, amount)
-            logger.info(f"Placed trade for {symbol}: {order}")
-            timestamp = int(time.time())
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("INSERT INTO trades (symbol, price, amount, timestamp) VALUES (?, ?, ?, ?)",
-                                 (symbol, price, amount, timestamp))
-                await db.commit()
-            logger.debug(f"Logged trade to DB: {symbol} | Price: {price:.4f} | Amount: {amount}")
-        except Exception as e:
-            logger.error(f"Error placing trade for {symbol}: {str(e)}")
+async def place_trade(self, symbol: str, price: float, amount: float):
+    try:
+        order = await self.exchange.create_limit_buy_order(symbol, amount, price)
+        logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
+
+        tp_price = price * 1.02
+        tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price,
+                                                               params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
+        logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
+
+        sl_price = price * 0.99
+        sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
+        logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
+            await db.commit()
+
+        return order
+    except Exception as e:
+        logger.error(f"Error placing trade for {symbol}: {str(e)}")
+        return None
+
+
+async def log_candidate(self, symbol: str, price: float, score: float):
+    try:
+        timestamp = int(time.time())
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("INSERT INTO candidates (symbol, price, score, timestamp) VALUES (?, ?, ?, ?)",
+                             (symbol, price, score, timestamp))
+            await db.commit()
+
+            cursor = await db.execute(
+                "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
+            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in await cursor.fetchall()]
+
+        # Asinhrono upisivanje u candidates.json
+        async with aiofiles.open("user_data/candidates.json", "w") as f:
+            await f.write(json.dumps(candidates, indent=4))
+        logger.info(f"Updated candidates.json with {len(candidates)} candidates")
+
+        logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+    except Exception as e:
+        logger.error(f"Error logging candidate for {symbol}: {str(e)}")
+        raise
