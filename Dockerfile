@@ -47,5 +47,5 @@ RUN chown -R "$USER":www-data /usr/share/nginx/html && \
 # proveri ko su vlasnici i permisions
 #RUN chown -R "$USER":www-data /app/logs && \
 #    chmod -R 0777 /app/logs/ \
-USER appuser
+# USER appuser
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

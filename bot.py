@@ -448,7 +448,7 @@ class ChovusSmartBot:
 
     async def _send_telegram_message(self, message: str):
         logger.info(f"Telegram message sent: {message}")
-     #   #  Dodati stvarnu Telegram implementaciju (npr. python-telegram-bot ili aiohttp)
+        # TODO: Dodati stvarnu Telegram implementaciju (npr. python-telegram-bot ili aiohttp)
         return {"status": "Message sent"}
 
     async def run(self):
