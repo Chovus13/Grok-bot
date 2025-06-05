@@ -149,7 +149,7 @@ async def set_strategy_endpoint(request: StrategyRequest):
 @app.get("/api/balance")
 async def get_balance():
     try:
-        balance = await bot.fetch_balance()
+        balance = await bot.fetch_balance()  # Zameni sa fetch_balance
         total_balance = get_config("total_balance", "0")
         total_balance = float(total_balance) if total_balance else 0.0
         return {

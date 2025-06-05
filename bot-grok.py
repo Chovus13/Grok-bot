@@ -123,9 +123,8 @@ class ChovusSmartBot:
 
     async def fetch_balance(self):
         try:
-            # PAPI endpoint za balans: /papi/v1/balance
             balance = await self.exchange.papi_get_balance()
-            available_balance = float(balance[0].get('balance', 0))  # PAPI vraća listu, uzimamo USDT balans
+            available_balance = float(balance[0].get('balance', 0))
             total_balance = float(balance[0].get('totalBalance', 0))
             set_config("balance", str(available_balance))
             set_config("total_balance", str(total_balance))
@@ -169,20 +168,6 @@ class ChovusSmartBot:
             self.position_mode = "Unknown"
             return {"mode": "Unknown"}
 
-    async def get_available_balance(self):
-        try:
-            balance = await self.exchange.fetch_balance()
-            available_balance = balance['USDT']['free']
-            set_config("balance", str(available_balance))
-            total_balance = balance['USDT']['total']
-            set_config("total_balance", str(total_balance))
-            logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
-            return available_balance
-        except Exception as e:
-            logger.error(f"Error fetching balance: {str(e)}")
-            fallback_balance = float(get_config("balance", "1000"))
-            logger.warning(f"Using fallback balance: {fallback_balance} USDT")
-            return fallback_balance
 
     # bot.py (ažuriraj maintain_order_book)
     async def maintain_order_book(self, symbol="ETHBTC"):
