@@ -8,12 +8,13 @@ from contextlib import asynccontextmanager
 import asyncio
 import os
 from dotenv import load_dotenv
-import sqlite3
+import logging
+from logging.handlers import RotatingFileHandler
+import aiosqlite
+
 from bot import ChovusSmartBot, init_db
 from config import get_config, set_config
 from settings import DB_PATH
-import logging
-from logging.handlers import RotatingFileHandler
 
 # Podesi logging sa rotacijom
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ logger.addHandler(stream_handler)
 load_dotenv()
 
 key = os.getenv("API_KEY", "")[:4] + "..." + os.getenv("API_KEY", "")[-4:]
-print(f"🔑 Using API_KEY: {key}")
+logger.info(f"🔑 Using API_KEY: {key}")
 
 app = FastAPI()
 templates = Jinja2Templates(directory="html")
@@ -66,8 +67,9 @@ async def lifespan(app: FastAPI):
     try:
         await init_db()
         logger.info("Database initialized successfully")
+        await bot.start_bot()
     except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
+        logger.error(f"Failed to initialize database or start bot: {str(e)}")
         raise
     yield
     try:
@@ -145,7 +147,6 @@ async def set_strategy_endpoint(request: StrategyRequest):
     return {"status": f"Strategy set to: {strategy_status}"}
 
 @app.get("/api/balance")
-@app.get("/api/balance")
 async def get_balance():
     try:
         balance = await bot.fetch_balance()
@@ -163,35 +164,13 @@ async def get_balance():
             "total_balance": 0.0,
             "score": get_config("score", "0")
         }
-#
-# @app.get("/api/balance")
-# async def get_balance():
-#     try:
-#         balance = await bot.get_available_balance()  # Ovo treba zameniti
-#         total_balance = get_config("total_balance", "0")
-#         total_balance = float(total_balance) if total_balance else 0.0
-#         return {
-#             "wallet_balance": float(balance),
-#             "total_balance": total_balance,
-#             "score": get_config("score", "0")
-#         }
-#     except Exception as e:
-#         logger.error(f"Error fetching balance: {str(e)}")
-#         return {
-#             "wallet_balance": float(get_config("balance", "1000")),
-#             "total_balance": 0.0,
-#             "score": get_config("score", "0")
-#         }
-
-
 
 @app.get("/api/trades")
-def get_trades():
+async def get_trades():
     try:
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT symbol, price, timestamp, outcome FROM trades ORDER BY id DESC LIMIT 20")
-            return [{"symbol": s, "price": p, "time": t, "outcome": o} for s, p, t, o in cursor.fetchall()]
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("SELECT symbol, price, timestamp, outcome FROM trades ORDER BY id DESC LIMIT 20")
+            return [{"symbol": s, "price": p, "time": t, "outcome": o} for s, p, t, o in await cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trades: {e}")
 
@@ -210,7 +189,6 @@ async def get_market_data():
         price = float(get_config("price", "0.0239"))
         bid_wall = float(get_config("bid_wall", "0.0238"))
         ask_wall = float(get_config("ask_wall", "0.0239"))
-        # Jednostavna logika za support/resistance i trend
         support = bid_wall * 1.005  # 0.5% iznad bid wall-a
         resistance = ask_wall * 1.015  # 1.5% iznad ask wall-a
         trend = "Bullish" if price > (support + resistance) / 2 else "Bearish"
@@ -233,49 +211,12 @@ async def get_market_data():
             "trend": "Bearish"
         }
 
-
-
-# @app.get("/api/market_data")
-# async def get_market_data(symbol: str = "ETH/BTC"):
-#     try:
-#         ticker = await bot.exchange.fetch_ticker(symbol)
-#         df = await bot.get_candles(symbol)
-#         high = df['high'].rolling(50).max().iloc[-1]
-#         low = df['low'].rolling(50).min().iloc[-1]
-#         fib_range = high - low
-#         support = high - fib_range * 0.618
-#         resistance = high - fib_range * 0.382
-#         smma = bot.calc_smma(df['close'], 5)
-#         wma = bot.calc_wma(df['close'], 144)
-#         trend = "Bullish" if smma.iloc[-1] > wma.iloc[-1] else "Bearish"
-
-        # Dohvati order book podatke
-        order_book = await bot.exchange.fetch_order_book(symbol, limit=100)
-        bids = order_book['bids']  # Lista [price, amount]
-        asks = order_book['asks']  # Lista [price, amount]
-
-        # Pronađi "walls" (najveće količine u bid/ask)
-        bid_wall = max(bids, key=lambda x: x[1], default=[0, 0])[0] if bids else 0
-        ask_wall = min(asks, key=lambda x: x[1], default=[float('inf'), 0])[0] if asks else 0
-
-        return {
-            "price": ticker['last'],
-            "support": support,
-            "resistance": resistance,
-            "bid_wall": bid_wall,
-            "ask_wall": ask_wall,
-            "trend": trend
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching market data: {e}")
-
 @app.get("/api/candidates")
 async def get_candidates():
     try:
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 10")
-            return [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 10")
+            return [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in await cursor.fetchall()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching candidates: {e}")
 
@@ -283,16 +224,14 @@ async def get_candidates():
 async def get_signals():
     try:
         signals = []
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT symbol, price, timestamp FROM trades WHERE outcome = 'TP' ORDER BY id DESC LIMIT 5")
-            signals.extend([{"symbol": s, "price": p, "time": t, "type": "Trade (TP)"} for s, p, t in cursor.fetchall()])
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("SELECT symbol, price, timestamp FROM trades WHERE outcome = 'TP' ORDER BY id DESC LIMIT 5")
+            signals.extend([{"symbol": s, "price": p, "time": t, "type": "Trade (TP)"} for s, p, t in await cursor.fetchall()])
 
         if not signals:
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT symbol, price, score, timestamp FROM candidates WHERE score > 0.5 ORDER BY score DESC LIMIT 5")
-                candidates = cursor.fetchall()
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute("SELECT symbol, price, score, timestamp FROM candidates WHERE score > 0.5 ORDER BY score DESC LIMIT 5")
+                candidates = await cursor.fetchall()
                 for symbol, price, score, timestamp in candidates:
                     df = await bot.get_candles(symbol)
                     crossover = bot.confirm_smma_wma_crossover(df)
@@ -326,41 +265,6 @@ async def set_manual_amount(request: AmountRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting manual amount: {e}")
 
-@app.get("/api/logs")
-async def get_logs():
-    try:
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT timestamp, message FROM bot_logs ORDER BY id DESC LIMIT 10")
-            return [{"time": t, "message": m} for t, m in cursor.fetchall()]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching logs: {e}")
-
-@app.get("/api/db_dump")
-async def db_dump():
-    try:
-        dump = {}
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT key, value FROM config")
-            dump["config"] = [{"key": k, "value": v} for k, v in cursor.fetchall()]
-
-            cursor.execute("SELECT symbol, price, timestamp, outcome FROM trades ORDER BY id DESC LIMIT 20")
-            dump["trades"] = [{"symbol": s, "price": p, "time": t, "outcome": o} for s, p, t, o in cursor.fetchall()]
-
-            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC LIMIT 20")
-            dump["candidates"] = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, t in cursor.fetchall()]
-
-            cursor.execute("SELECT timestamp, message FROM bot_logs ORDER BY id DESC LIMIT 20")
-            dump["bot_logs"] = [{"time": t, "message": m} for t, m in cursor.fetchall()]
-
-        return dump
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error dumping database: {e}")
-
-# Novi endpoint za prikazivanje logova na HTML stranici
-@app.get("/logs", response_class=HTMLResponse)
 @app.get("/logs", response_class=HTMLResponse)
 async def show_logs(request: Request):
     try:
@@ -372,7 +276,6 @@ async def show_logs(request: Request):
                 if len(parts) != 3:
                     continue
                 timestamp, level, message = parts
-                # Filtriraj poruke: uključi INFO, WARNING, ERROR i određene DEBUG poruke
                 if level in ["INFO", "WARNING", "ERROR"] or (level == "DEBUG" and any(keyword in message for keyword in ["Available futures markets", "Raw available_pairs", "Scanning", "Scanned", "Fetching", "Starting pair scanning"])):
                     logs.append({"timestamp": timestamp, "level": level, "message": message})
         return templates.TemplateResponse("logs.html", {"request": request, "logs": logs})
@@ -389,6 +292,14 @@ async def get_scanning_status():
         return [{"symbol": "N/A", "status": "Error fetching status"}]
 
 # main.py (dodaj na kraj fajla)
+@app.get("/api/order_book")
+async def get_order_book():
+    try:
+        return bot.get_order_book()
+    except Exception as e:
+        logger.error(f"Error fetching order book: {str(e)}")
+        return {"bids": [], "asks": []}
+
 @app.get("/api/order_book")
 async def get_order_book():
     try:
@@ -415,13 +326,31 @@ async def get_position_mode():
         logger.error(f"Error fetching position mode: {str(e)}")
         return {"mode": "Unknown"}
 
+# main.py (dodaj na kraj fajla)
+@app.get("/api/positions")
+async def get_positions():
+    try:
+        positions = await bot.fetch_positions()
+        return positions
+    except Exception as e:
+        logger.error(f"Error fetching positions: {str(e)}")
+        return []
+
+@app.get("/api/position_mode")
+async def get_position_mode():
+    try:
+        mode = await bot.fetch_position_mode()
+        return {"mode": mode}
+    except Exception as e:
+        logger.error(f"Error fetching position mode: {str(e)}")
+        return {"mode": "Unknown"}
+
 @app.get("/api/balance")
 async def get_balance():
     try:
         balance = await bot.get_available_balance()
         return {
             "wallet_balance": str(balance),
-
             "total_balance": get_config("total_balance", "0"),
             "score": get_config("score", "0")
         }
