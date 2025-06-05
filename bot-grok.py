@@ -91,7 +91,7 @@ def _init_db_sync():
         """)
         conn.commit()
 
-# bot.py (ažuriraj inicijalizaciju exchange-a)
+### Prelazak_na_PAPI
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
         self.api_key = api_key or get_config("api_key", os.getenv("API_KEY", ""))
@@ -104,11 +104,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Osigurava futures tržište
+                'defaultType': 'future',  # Ostaje 'future' jer PM podržava futures
             },
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com' if testnet else 'https://fapi.binance.com/fapi/v3'
+                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'  # Prebaci na PAPI
                 }
             }
         })
@@ -121,16 +121,32 @@ class ChovusSmartBot:
         self.positions = []
         self.position_mode = "One-way"
 
-    # bot.py (ažuriraj metode za dohvatanje pozicija, balansa i režima)
+    async def fetch_balance(self):
+        try:
+            # PAPI endpoint za balans: /papi/v1/balance
+            balance = await self.exchange.papi_get_balance()
+            available_balance = float(balance[0].get('balance', 0))  # PAPI vraća listu, uzimamo USDT balans
+            total_balance = float(balance[0].get('totalBalance', 0))
+            set_config("balance", str(available_balance))
+            set_config("total_balance", str(total_balance))
+            logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
+            return available_balance
+        except Exception as e:
+            logger.error(f"Error fetching balance: {str(e)}")
+            fallback_balance = float(get_config("balance", "1000"))
+            logger.warning(f"Using fallback balance: {fallback_balance} USDT")
+            return fallback_balance
+
     async def fetch_positions(self):
         try:
-            positions = await self.exchange.fetch_positions()
+            # PAPI endpoint za pozicije: /papi/v1/um/positionRisk
+            positions = await self.exchange.papi_get_um_position_risk()
             self.positions = [
                 {
                     "symbol": pos['symbol'],
-                    "entryPrice": pos.get('entryPrice', 0),
-                    "positionAmt": pos.get('positionAmt', 0),
-                    "isolated": pos.get('isolated', False)
+                    "entryPrice": float(pos.get('entryPrice', 0)),
+                    "positionAmt": float(pos.get('positionAmt', 0)),
+                    "isolated": pos.get('marginType', 'cross') == 'isolated'
                 }
                 for pos in positions
             ]
@@ -143,7 +159,8 @@ class ChovusSmartBot:
 
     async def fetch_position_mode(self):
         try:
-            mode = await self.exchange.fapiprivate_get_positionside_dual()
+            # PAPI endpoint za režim pozicija: /papi/v1/um/positionSide/dual
+            mode = await self.exchange.papi_get_um_position_side_dual()
             self.position_mode = "Hedge" if mode['dualSidePosition'] else "One-way"
             logger.info(f"Position mode: {self.position_mode}")
             return {"mode": self.position_mode}
