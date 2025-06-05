@@ -215,6 +215,7 @@ class ChovusSmartBot:
             "asks": sorted([[price, amount] for price, amount in self.order_book["asks"].items()])[:10]
         }
 
+    # bot.py (ažuriraj _scan_pairs)
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
         log_action = logger.debug
         log_action("Starting pair scanning for USDⓈ-M Futures...")
@@ -222,16 +223,17 @@ class ChovusSmartBot:
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
-            markets = {m['symbol']: m for m in self.exchange.markets.values() if m['type'] == 'future' and m['quote'] == 'USDT'}
+            markets = {m['symbol']: m for m in self.exchange.markets.values() if
+                       m['type'] == 'future' and m['quote'] in ['USDT', 'BTC']}
             log_action(f"Available futures markets: {list(markets.keys())}")
 
             normalized_markets = markets
 
-            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT")
+            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
-                available_pairs = "BTC/USDT,ETH/USDT"
-                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT")
+                available_pairs = "BTC/USDT,ETH/USDT,ETH/BTC"
+                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,ETH/BTC")
             all_futures = available_pairs.split(",") if available_pairs else []
             all_futures = [p for p in all_futures if p in normalized_markets]
             log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
@@ -249,7 +251,8 @@ class ChovusSmartBot:
                 for symbol in all_futures:
                     ticker = await self.exchange.fetch_ticker(symbol)
                     tickers[symbol] = ticker
-                log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
+                    log_action(f"Fetched ticker for {symbol}: {ticker}")
+                log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())}...")
             except Exception as e:
                 log_action(f"Error fetching tickers: {str(e)}")
                 self.scanning_status = [{"symbol": "N/A", "status": f"Error fetching tickers: {str(e)}"}]
@@ -269,12 +272,15 @@ class ChovusSmartBot:
                     volume = ticker.get('quoteVolume', 0)
                     if not (volume and price and price > 0):
                         log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
-                        self.scanning_status.append({"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
+                        self.scanning_status.append(
+                            {"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
                         continue
 
                     market = normalized_markets.get(symbol, {})
-                    lot_size = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
-                    price_filter = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
+                    lot_size = next(
+                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
+                    price_filter = next(
+                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
 
                     min_qty = float(lot_size.get('minQty', 0))
                     max_qty = float(lot_size.get('maxQty', float('inf')))
@@ -299,7 +305,8 @@ class ChovusSmartBot:
                     df = await self.get_candles(symbol_mapping[symbol], timeframe='1h', limit=150)
                     if df.empty or len(df) < 150:
                         log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
-                        self.scanning_status.append({"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
+                        self.scanning_status.append(
+                            {"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
                         continue
 
                     log_action(f"Calculating indicators for {symbol}...")
@@ -319,12 +326,13 @@ class ChovusSmartBot:
                         "price": price
                     })
                     self.log_candidate(symbol, price, score)
-                    if score > 0.5:
+                    if score > 0.3:  # Smanjeno sa 0.5 na 0.3 za testiranje
                         await self.place_trade(symbol_mapping[symbol], price, amount)
                         log_action(f"Trade placed for {symbol} with score {score:.2f}")
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
-                        log_action(f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
+                        log_action(
+                            f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
                 except Exception as e:
                     log_action(f"Error scanning {symbol}: {str(e)}")
                     self.scanning_status.append({"symbol": symbol, "status": f"Error: {str(e)}"})
@@ -380,14 +388,6 @@ class ChovusSmartBot:
             logger.error(f"Error placing trade for {symbol}: {str(e)}")
             return None
 
-    async def start_bot(self):
-        self.running = True
-        # Proveri pozicije i režim pri pokretanju
-        await self.fetch_positions()
-        await self.fetch_position_mode()
-        self._bot_task = asyncio.create_task(self.run())
-        asyncio.create_task(self.maintain_order_book("ETHBTC"))
-        logger.info("Bot started")
 
     async def stop_bot(self):
         self.running = False
@@ -407,6 +407,36 @@ class ChovusSmartBot:
         self.current_strategy = strategy_name
         logger.info(f"Strategy set to: {strategy_name}")
         return self.current_strategy
+
+    async def set_margin_type(self, symbol: str, margin_type: str):
+        try:
+            await self.exchange.set_margin_mode(margin_type, symbol)
+            logger.info(f"Set margin type to {margin_type} for {symbol}")
+        except Exception as e:
+            logger.error(f"Error setting margin type for {symbol}: {str(e)}")
+
+    # bot.py (dodaj u klasu ChovusSmartBot)
+    async def set_position_mode(self, dual_side: bool):
+        try:
+            await self.exchange.fapiprivate_post_positionside_dual(
+                {"dualSidePosition": "true" if dual_side else "false"})
+            self.position_mode = "Hedge" if dual_side else "One-way"
+            logger.info(f"Set position mode to {self.position_mode}")
+        except Exception as e:
+            logger.error(f"Error setting position mode: {str(e)}")
+
+    async def start_bot(self):
+        self.running = True
+        # Postavi Hedge mod
+        await self.set_position_mode(True)  # Promeni na False ako želiš One-way
+        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
+        for symbol in pairs:
+            await self.set_margin_type(symbol, "ISOLATED")  # Ili "CROSS"
+        await self.fetch_positions()
+        await self.fetch_position_mode()
+        self._bot_task = asyncio.create_task(self.run())
+        asyncio.create_task(self.maintain_order_book("ETHBTC"))
+        logger.info("Bot started")
 
     def set_leverage(self, leverage: int, symbol: str = None):
         if symbol is None:
@@ -493,9 +523,10 @@ class ChovusSmartBot:
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
     # bot.py
+    # bot.py (ažuriraj log_candidate)
     def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)  # Povećaj timeout
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
             conn.commit()
@@ -504,12 +535,13 @@ class ChovusSmartBot:
             candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
             with open("user_data/candidates.json", "w") as f:
                 json.dump(candidates, f, indent=4)
+            logger.info(f"Updated candidates.json with {len(candidates)} candidates")
 
             conn.close()
             logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
         except Exception as e:
             logger.error(f"Error logging candidate for {symbol}: {str(e)}")
-            raise  # Podigni izuzetak da vidimo gde je problem
+            raise
 
     async def place_trade(self, symbol: str, price: float, amount: float):
         try:
