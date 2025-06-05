@@ -91,7 +91,7 @@ def _init_db_sync():
         """)
         conn.commit()
 
-### Prelazak_na_PAPI
+# bot.py (ažuriraj inicijalizaciju exchange-a)
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
         self.api_key = api_key or get_config("api_key", os.getenv("API_KEY", ""))
@@ -104,11 +104,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Ostaje 'future' jer PM podržava futures
+                'defaultType': 'future',  # Osigurava futures tržište
             },
             'urls': {
                 'api': {
-                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'  # Prebaci na PAPI
+                    'fapi': 'https://testnet.binancefuture.com' if testnet else 'https://fapi.binance.com/fapi/v3'
                 }
             }
         })
