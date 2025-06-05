@@ -291,15 +291,6 @@ async def get_scanning_status():
         logger.error(f"Error fetching scanning status: {str(e)}")
         return [{"symbol": "N/A", "status": "Error fetching status"}]
 
-# main.py (dodaj na kraj fajla)
-@app.get("/api/order_book")
-async def get_order_book():
-    try:
-        return bot.get_order_book()
-    except Exception as e:
-        logger.error(f"Error fetching order book: {str(e)}")
-        return {"bids": [], "asks": []}
-
 @app.get("/api/order_book")
 async def get_order_book():
     try:
@@ -325,39 +316,3 @@ async def get_position_mode():
     except Exception as e:
         logger.error(f"Error fetching position mode: {str(e)}")
         return {"mode": "Unknown"}
-
-# main.py (dodaj na kraj fajla)
-@app.get("/api/positions")
-async def get_positions():
-    try:
-        positions = await bot.fetch_positions()
-        return positions
-    except Exception as e:
-        logger.error(f"Error fetching positions: {str(e)}")
-        return []
-
-@app.get("/api/position_mode")
-async def get_position_mode():
-    try:
-        mode = await bot.fetch_position_mode()
-        return {"mode": mode}
-    except Exception as e:
-        logger.error(f"Error fetching position mode: {str(e)}")
-        return {"mode": "Unknown"}
-
-@app.get("/api/balance")
-async def get_balance():
-    try:
-        balance = await bot.get_available_balance()
-        return {
-            "wallet_balance": str(balance),
-            "total_balance": get_config("total_balance", "0"),
-            "score": get_config("score", "0")
-        }
-    except Exception as e:
-        logger.error(f"Error fetching balance: {str(e)}")
-        return {
-            "wallet_balance": get_config("balance", "0"),
-            "total_balance": get_config("total_balance", "0"),
-            "score": get_config("score", "0")
-        }
