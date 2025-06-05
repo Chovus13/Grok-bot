@@ -432,12 +432,21 @@ class ChovusSmartBot:
         logger.info(f"Strategy set to: {strategy_name}")
         return self.current_strategy
 
+    # bot.py (proveri set_margin_type metodu)
     async def set_margin_type(self, symbol: str, margin_type: str):
         try:
+            # Binance API za promenu margin tipa
             await self.exchange.set_margin_mode(margin_type, symbol)
             logger.info(f"Set margin type to {margin_type} for {symbol}")
         except Exception as e:
             logger.error(f"Error setting margin type for {symbol}: {str(e)}")
+            # Ako ne uspe, proveri trenutni margin tip
+            try:
+                position = await self.exchange.fetch_position(symbol)
+                current_margin_type = "ISOLATED" if position.get('isolated', False) else "CROSS"
+                logger.warning(f"Current margin type for {symbol}: {current_margin_type}")
+            except Exception as e2:
+                logger.error(f"Error checking margin type for {symbol}: {str(e2)}")
 
     # bot.py (dodaj u klasu ChovusSmartBot)
     async def set_position_mode(self, dual_side: bool):
@@ -449,14 +458,15 @@ class ChovusSmartBot:
         except Exception as e:
             logger.error(f"Error setting position mode: {str(e)}")
 
+    # bot.py (ažuriraj start_bot metodu)
     async def start_bot(self):
         self.running = True
-        # Postavi Hedge mod (opciono)
-        await self.set_position_mode(False)  # Ostavi One-way jer ti trenutno odgovara
-        # Postavi cross margin za sve parove
+        # Postavi One-way mod (već je podešeno, ali osigurajmo)
+        await self.set_position_mode(False)  # False za One-way, True za Hedge
+        # Postavi isolated margin za sve parove
         pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT").split(",")
         for symbol in pairs:
-            await self.set_margin_type(symbol, "CROSS")
+            await self.set_margin_type(symbol, "ISOLATED")  # Promeni sa "CROSS" na "ISOLATED"
         await self.fetch_positions()
         await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
