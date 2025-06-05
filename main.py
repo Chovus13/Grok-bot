@@ -64,23 +64,14 @@ async def log_requests(request: Request, call_next):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        await init_db()
-        logger.info("Database initialized successfully")
-        await bot.start_bot()
-    except Exception as e:
-        logger.error(f"Failed to initialize database or start bot: {str(e)}")
-        raise
+    # Startup
+    await init_db()  # Inicijalizuj bazu asinhrono
+    global bot
+    bot = ChovusSmartBot()
+    await bot.start_bot()
     yield
-    try:
-        if bot.running:
-            await bot.stop_bot()
-            if bot._bot_task and not bot._bot_task.done():
-                await bot._bot_task
-        await bot.exchange.close()
-        logger.info("Exchange instance closed successfully")
-    except Exception as e:
-        logger.error(f"Error closing exchange instance: {str(e)}")
+    # Shutdown
+    await bot.stop_bot()
     logger.info("Shutting down application")
 
 app = FastAPI(lifespan=lifespan)

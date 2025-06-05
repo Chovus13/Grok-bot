@@ -1,6 +1,6 @@
 # bot.py
 import asyncio
-import sqlite3
+import aiosqlite
 import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
@@ -40,57 +40,18 @@ def table(values):
     string = ' | '.join(['{:<' + str(w) + '}' for w in widths])
     return "\n".join([string.format(*[str(v[k]) for k in keys]) for v in values])
 
-# bot.py (ažuriraj init_db i log_candidate)
 async def init_db():
     try:
-        await asyncio.to_thread(_init_db_sync)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('''CREATE TABLE IF NOT EXISTS candidates
+                              (symbol TEXT, price REAL, score REAL, timestamp INTEGER)''')
+            await db.execute('''CREATE TABLE IF NOT EXISTS trades
+                              (symbol TEXT, price REAL, amount REAL, timestamp INTEGER)''')
+            await db.commit()
         logger.info("Database initialized successfully in async mode")
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
         raise
-
-def _init_db_sync():
-    with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_key", os.getenv("API_KEY", "")))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_secret", os.getenv("API_SECRET", "")))
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                price REAL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                outcome TEXT
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS candidates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                price REAL,
-                score REAL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bot_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                message TEXT
-            )
-        """)
-        conn.commit()
 
 ### Prelazak_na_PAPI
 class ChovusSmartBot:
@@ -105,11 +66,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Ostaje 'future' jer PM podržava futures
+                'defaultType': 'future',
             },
             'urls': {
                 'api': {
-                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'  # Prebaci na PAPI
+                    'papi': 'https://testnet.binance.com/papi' if testnet else 'https://papi.binance.com'
                 }
             }
         })
@@ -613,53 +574,26 @@ class ChovusSmartBot:
         weights = pd.Series(range(1, period + 1))
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
-    # bot.py
-    # bot.py (ažuriraj log_candidate)
-    def log_candidate(self, symbol: str, price: float, score: float):
+    async def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
-            conn.commit()
-
-            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
-            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
-            with open("user_data/candidates.json", "w") as f:
-                json.dump(candidates, f, indent=4)
-            logger.info(f"Updated candidates.json with {len(candidates)} candidates")
-
-            conn.close()
-            logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+            timestamp = int(time.time())
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("INSERT INTO candidates (symbol, price, score, timestamp) VALUES (?, ?, ?, ?)",
+                                 (symbol, price, score, timestamp))
+                await db.commit()
+            logger.debug(f"Logged candidate to DB: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
         except Exception as e:
-            logger.error(f"Error logging candidate for {symbol}: {str(e)}")
-            raise
+            logger.error(f"Error logging candidate to DB: {str(e)}")
 
     async def place_trade(self, symbol: str, price: float, amount: float):
         try:
-            order = await self.exchange.create_limit_buy_order(symbol, amount, price)
-            logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
-
-            tp_price = price * 1.02
-            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price,
-                                                                   params={"stopPrice": tp_price,
-                                                                           "type": "TAKE_PROFIT"})
-            logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
-
-            sl_price = price * 0.99
-            sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
-            logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
-
-            try:
-                conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                logger.error(f"Error logging trade for {symbol}: {str(e)}")
-                raise
-
-            return order
+            order = await self.exchange.create_market_buy_order(symbol, amount)
+            logger.info(f"Placed trade for {symbol}: {order}")
+            timestamp = int(time.time())
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("INSERT INTO trades (symbol, price, amount, timestamp) VALUES (?, ?, ?, ?)",
+                                 (symbol, price, amount, timestamp))
+                await db.commit()
+            logger.debug(f"Logged trade to DB: {symbol} | Price: {price:.4f} | Amount: {amount}")
         except Exception as e:
             logger.error(f"Error placing trade for {symbol}: {str(e)}")
-            return None
