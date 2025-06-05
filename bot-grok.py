@@ -39,6 +39,7 @@ def table(values):
     string = ' | '.join(['{:<' + str(w) + '}' for w in widths])
     return "\n".join([string.format(*[str(v[k]) for k in keys]) for v in values])
 
+# bot.py (ažuriraj init_db i log_candidate)
 async def init_db():
     try:
         await asyncio.to_thread(_init_db_sync)
@@ -48,7 +49,7 @@ async def init_db():
         raise
 
 def _init_db_sync():
-    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS config (
@@ -56,7 +57,7 @@ def _init_db_sync():
                 value TEXT
             )
         """)
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
+        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
         cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
@@ -541,7 +542,7 @@ class ChovusSmartBot:
     # bot.py (ažuriraj log_candidate)
     def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
             cursor = conn.cursor()
             cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
             conn.commit()
