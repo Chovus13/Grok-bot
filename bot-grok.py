@@ -121,41 +121,51 @@ class ChovusSmartBot:
         self.positions = []
         self.position_mode = "One-way"
 
+    # bot.py (ažuriraj metode za dohvatanje pozicija, balansa i režima)
     async def fetch_positions(self):
-        """Dohvata trenutne pozicije korisnika."""
         try:
-            self.positions = await self.exchange.fapiprivatev2_get_positionrisk()
-            logger.info("Fetched positions:\n" + table(self.positions))
+            positions = await self.exchange.fetch_positions()
+            self.positions = [
+                {
+                    "symbol": pos['symbol'],
+                    "entryPrice": pos.get('entryPrice', 0),
+                    "positionAmt": pos.get('positionAmt', 0),
+                    "isolated": pos.get('isolated', False)
+                }
+                for pos in positions
+            ]
+            logger.info(f"Fetched positions: {self.positions}")
             return self.positions
         except Exception as e:
             logger.error(f"Error fetching positions: {str(e)}")
+            self.positions = []
             return []
 
     async def fetch_position_mode(self):
-        """Proverava da li je korisnik u One-way ili Hedge modu."""
         try:
-            response = await self.exchange.fapiprivate_get_positionside_dual()
-            self.position_mode = "Hedge" if response['dualSidePosition'] else "One-way"
+            mode = await self.exchange.fapiprivate_get_positionside_dual()
+            self.position_mode = "Hedge" if mode['dualSidePosition'] else "One-way"
             logger.info(f"Position mode: {self.position_mode}")
-            return self.position_mode
+            return {"mode": self.position_mode}
         except Exception as e:
             logger.error(f"Error fetching position mode: {str(e)}")
-            return "Unknown"
+            self.position_mode = "Unknown"
+            return {"mode": "Unknown"}
 
-    async def get_available_balance(self) -> float:
+    async def get_available_balance(self):
         try:
-            balance = await self.exchange.fetch_balance(params={"type": "future"})
-            available = float(balance['USDT'].get('free', 0))
-            total = float(balance['USDT'].get('total', 0))
-            logger.info(f"Fetched available balance: {available} USDT | Total: {total} USDT")
-            set_config("balance", str(available))
-            set_config("total_balance", str(total))
-            return available
+            balance = await self.exchange.fetch_balance()
+            available_balance = balance['USDT']['free']
+            set_config("balance", str(available_balance))
+            total_balance = balance['USDT']['total']
+            set_config("total_balance", str(total_balance))
+            logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
+            return available_balance
         except Exception as e:
             logger.error(f"Error fetching balance: {str(e)}")
-            fallback = float(get_config("balance", "0"))
-            logger.warning(f"Using fallback balance: {fallback} USDT")
-            return fallback
+            fallback_balance = float(get_config("balance", "1000"))
+            logger.warning(f"Using fallback balance: {fallback_balance} USDT")
+            return fallback_balance
 
     # bot.py (ažuriraj maintain_order_book)
     async def maintain_order_book(self, symbol="ETHBTC"):
@@ -230,7 +240,6 @@ class ChovusSmartBot:
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
-            # Filtriraj samo perpetual futures (bez datuma isteka)
             markets = {
                 m['symbol']: m for m in self.exchange.markets.values()
                 if m['type'] == 'future' and m['quote'] in ['USDT', 'BTC'] and ':' not in m['symbol']
@@ -341,9 +350,9 @@ class ChovusSmartBot:
                         "price": price
                     })
                     self.log_candidate(symbol, price, score)
-                    if score > 0.3:
+                    if score > 0.2:  # Smanjeno na 0.2 za testiranje
                         await self.place_trade(symbol_mapping[symbol], price, amount)
-                        log_action(f"Trade placed for {symbol} with score {score:.2f}")
+                        log_action(f"Trade placed for {symbol} with score {score:.2f}")  # Popravljena linija
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
                         log_action(
