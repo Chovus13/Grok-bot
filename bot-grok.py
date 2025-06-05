@@ -393,6 +393,21 @@ class ChovusSmartBot:
         except Exception as e:
             logger.error(f"Error calculating amount for {symbol}: {str(e)}")
             return 0
+# preskocio
+#     async def place_trade(self, symbol: str, price: float, amount: float):
+#         try:
+#             order = await self.exchange.create_market_buy_order(symbol, amount)
+#             logger.info(f"Placed trade for {symbol}: {order}")
+#             # Upisuj trejd u bazu
+#             timestamp = int(time.time())
+#             with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
+#                 cursor = conn.cursor()
+#                 cursor.execute("INSERT INTO trades (symbol, price, amount, timestamp) VALUES (?, ?, ?, ?)",
+#                                (symbol, price, amount, timestamp))
+#                 conn.commit()
+#                 logger.debug(f"Logged trade to DB: {symbol} | Price: {price:.4f} | Amount: {amount}")
+#         except Exception as e:
+#             logger.error(f"Error placing trade for {symbol}: {str(e)}")
 
     async def place_trade(self, symbol: str, price: float, amount: float):
         try:
