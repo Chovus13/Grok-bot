@@ -124,12 +124,14 @@ class ChovusSmartBot:
 
     async def fetch_balance(self):
         try:
-            balance = await self.exchange.papi_get_balance()
-            available_balance = float(balance[0].get('balance', 0))
-            total_balance = float(balance[0].get('totalBalance', 0))
+            # PAPI endpoint za balans: /papi/v1/balance
+            balance = await self.exchange.papi_get_balance(params={'recvWindow': 5000})
+            available_balance = float(balance[0].get('balance', 0))  # PAPI vraća listu, uzimamo USDT balans
+            total_balance = float(balance[0].get('crossWalletBalance', 0))
             set_config("balance", str(available_balance))
             set_config("total_balance", str(total_balance))
             logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
+            await asyncio.sleep(1)  # Dodaj kašnjenje od 1 sekunde
             return available_balance
         except Exception as e:
             logger.error(f"Error fetching balance: {str(e)}")
