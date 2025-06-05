@@ -126,12 +126,18 @@ class ChovusSmartBot:
         try:
             # PAPI endpoint za balans: /papi/v1/balance
             balance = await self.exchange.papi_get_balance(params={'recvWindow': 5000})
-            available_balance = float(balance[0].get('balance', 0))  # PAPI vraća listu, uzimamo USDT balans
-            total_balance = float(balance[0].get('crossWalletBalance', 0))
+            # Proveri da li je odgovor lista i ima bar jedan element
+            if not isinstance(balance, list) or not balance:
+                raise ValueError("Balance response is empty or not a list")
+            # Pronađi USDT balans
+            usdt_balance = next((item for item in balance if item.get('asset') == 'USDT'), None)
+            if not usdt_balance:
+                raise ValueError("USDT balance not found in response")
+            available_balance = float(usdt_balance.get('balance', 0))
+            total_balance = float(usdt_balance.get('crossWalletBalance', 0))
             set_config("balance", str(available_balance))
             set_config("total_balance", str(total_balance))
             logger.info(f"Fetched available balance: {available_balance} USDT | Total: {total_balance} USDT")
-            await asyncio.sleep(1)  # Dodaj kašnjenje od 1 sekunde
             return available_balance
         except Exception as e:
             logger.error(f"Error fetching balance: {str(e)}")
@@ -394,29 +400,6 @@ class ChovusSmartBot:
             logger.error(f"Error calculating amount for {symbol}: {str(e)}")
             return 0
 
-
-    async def place_trade(self, symbol: str, price: float, amount: float):
-        try:
-            order = await self.exchange.create_limit_buy_order(symbol, amount, price)
-            logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
-
-            tp_price = price * 1.02
-            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price, params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
-            logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
-
-            sl_price = price * 0.99
-            sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
-            logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
-
-            with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0) as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
-                conn.commit()
-
-            return order
-        except Exception as e:
-            logger.error(f"Error placing trade for {symbol}: {str(e)}")
-            return None
 
 
     async def stop_bot(self):
