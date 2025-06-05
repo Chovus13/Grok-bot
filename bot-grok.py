@@ -159,17 +159,26 @@ class ChovusSmartBot:
             logger.warning(f"Using fallback balance: {fallback} USDT")
             return fallback
 
+    # bot.py (ažuriraj maintain_order_book)
     async def maintain_order_book(self, symbol="ETHBTC"):
+        """Upravlja lokalnim order book-om za dati simbol koristeći WebSocket."""
         try:
+            # Dohvati inicijalni snapshot
             snapshot = await self.exchange.fetch_order_book(symbol, limit=1000)
-            self.order_book["lastUpdateId"] = snapshot["lastUpdateId"]
+            # Proveri da li snapshot ima 'lastUpdateId', ako nema, postavi na 0
+            last_update_id = snapshot.get("lastUpdateId", 0)
+            if last_update_id == 0:
+                logger.warning(f"No lastUpdateId in snapshot for {symbol}, using 0")
+            self.order_book["lastUpdateId"] = last_update_id
             self.order_book["bids"] = {float(price): float(amount) for price, amount in snapshot["bids"]}
             self.order_book["asks"] = {float(price): float(amount) for price, amount in snapshot["asks"]}
             logger.info(f"Order book snapshot fetched for {symbol}: lastUpdateId={self.order_book['lastUpdateId']}")
 
+            # Otvori WebSocket stream
             stream_name = f"{symbol.lower()}@depth"
             async for event in self.exchange.watch_order_book(symbol, params={"streams": stream_name}):
                 if "u" not in event or "U" not in event:
+                    logger.warning(f"Invalid WebSocket event for {symbol}: {event}")
                     continue
 
                 update_id = event["u"]
