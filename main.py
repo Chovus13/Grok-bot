@@ -60,7 +60,7 @@ async def log_requests(request: Request, call_next):
 async def lifespan(app: FastAPI):
     try:
         await init_db()
-        await bot.initialize()  # Pozivamo asinhronu inicijalizaciju
+        await bot.initialize()
         logger.info("Database and bot initialized successfully")
         await bot.start_bot()
     except Exception as e:
@@ -72,7 +72,8 @@ async def lifespan(app: FastAPI):
             await bot.stop_bot()
             if bot._bot_task and not bot._bot_task.done():
                 await bot._bot_task
-        await bot.exchange.close()
+        if bot.exchange:
+            await bot.exchange.close()
         logger.info("Exchange instance closed successfully")
     except Exception as e:
         logger.error(f"Error closing exchange instance: {str(e)}")
@@ -242,11 +243,11 @@ async def set_leverage(request: LeverageRequest):
     try:
         bot.set_leverage(request.leverage, symbol=request.symbol)
         if request.symbol:
-            await set_config(f"leverage_{request.symbol.replace('/', '_')}", str(request.leverage))
+            await set_config(f"leverage_{request.symbol.replace('/', '_').replace(':USDT', '')}", str(request.leverage))
         else:
-            pairs = (await get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT")).split(",")
+            pairs = (await get_config("available_pairs", "BTC/USDT:USDT,ETH/USDT:USDT")).split(",")
             for sym in pairs:
-                await set_config(f"leverage_{sym.replace('/', '_')}", str(request.leverage))
+                await set_config(f"leverage_{sym.replace('/', '_').replace(':USDT', '')}", str(request.leverage))
         return {"status": f"Leverage set to: {request.leverage}x"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting leverage: {e}")
