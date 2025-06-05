@@ -1,6 +1,6 @@
 # bot.py
 import asyncio
-import sqlite3
+import aiosqlite
 import pandas as pd
 from ccxt.async_support import binance
 from typing import List, Tuple
@@ -41,59 +41,55 @@ def table(values):
 
 async def init_db():
     try:
-        await asyncio.to_thread(_init_db_sync)
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_key", os.getenv("API_KEY", "")))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_secret", os.getenv("API_SECRET", "")))
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT,
+                    price REAL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    outcome TEXT
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT,
+                    price REAL,
+                    score REAL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    message TEXT
+                )
+            """)
+            await conn.commit()
         logger.info("Database initialized successfully in async mode")
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
         raise
 
-def _init_db_sync():
-    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_key", os.getenv("API_KEY", "")))
-        cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_secret", os.getenv("API_SECRET", "")))
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                price REAL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                outcome TEXT
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS candidates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                price REAL,
-                score REAL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bot_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                message TEXT
-            )
-        """)
-        conn.commit()
-
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
-        self.api_key = api_key or get_config("api_key", os.getenv("API_KEY", ""))
-        self.api_secret = api_secret or get_config("api_secret", os.getenv("API_SECRET", ""))
+        self.api_key = api_key or asyncio.run(get_config("api_key", os.getenv("API_KEY", "")))
+        self.api_secret = api_secret or asyncio.run(get_config("api_secret", os.getenv("API_SECRET", "")))
         logger.info(f"Using API Key: {self.api_key[:4]}...{self.api_key[-4:]}")
         if not self.api_key or not self.api_secret:
             raise ValueError("API key and secret must be provided via config or environment variables")
@@ -102,15 +98,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Eksplicitno postavljamo futures
+                'defaultType': 'future',
             },
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com'
-                }
-            } if testnet else {
-                'api': {
-                    'fapi': 'https://fapi.binance.com'
+                    'fapi': 'https://testnet.binancefuture.com' if testnet else 'https://fapi.binance.com'
                 }
             }
         })
@@ -124,7 +116,6 @@ class ChovusSmartBot:
         self.position_mode = "One-way"
 
     async def fetch_positions(self):
-        """Dohvata trenutne pozicije korisnika."""
         try:
             self.positions = await self.exchange.fapiprivatev2_get_positionrisk()
             logger.info("Fetched positions:\n" + table(self.positions))
@@ -134,7 +125,6 @@ class ChovusSmartBot:
             return []
 
     async def fetch_position_mode(self):
-        """Proverava da li je korisnik u One-way ili Hedge modu."""
         try:
             response = await self.exchange.fapiprivate_get_positionside_dual()
             self.position_mode = "Hedge" if response['dualSidePosition'] else "One-way"
@@ -150,12 +140,12 @@ class ChovusSmartBot:
             available = float(balance['USDT'].get('free', 0))
             total = float(balance['USDT'].get('total', 0))
             logger.info(f"Fetched available balance: {available} USDT | Total: {total} USDT")
-            set_config("balance", str(available))
-            set_config("total_balance", str(total))
+            await set_config("balance", str(available))
+            await set_config("total_balance", str(total))
             return available
         except Exception as e:
             logger.error(f"Error fetching balance: {str(e)}")
-            fallback = float(get_config("balance", "0"))
+            fallback = float(await get_config("balance", "0"))
             logger.warning(f"Using fallback balance: {fallback} USDT")
             return fallback
 
@@ -212,7 +202,7 @@ class ChovusSmartBot:
     def get_order_book(self):
         return {
             "bids": sorted([[price, amount] for price, amount in self.order_book["bids"].items()], reverse=True)[:10],
-            "asks": sorted([[price, amount] for price, amount in self.order_book["asks"].items()])[:10]
+            "asks": were sorted([[price, amount] for price, amount in self.order_book["asks"].items()])[:10]
         }
 
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
@@ -227,10 +217,10 @@ class ChovusSmartBot:
 
             normalized_markets = markets
 
-            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT")
+            available_pairs = await get_config("available_pairs", "BTC/USDT,ETH/USDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
-                available_pairs = "BTC/USDT,ETH/USDT"
+                available_pairs = " vested_pairs = "BTC/USDT,ETH/USDT"
                 log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT")
             all_futures = available_pairs.split(",") if available_pairs else []
             all_futures = [p for p in all_futures if p in normalized_markets]
@@ -286,7 +276,7 @@ class ChovusSmartBot:
                         self.scanning_status.append({"symbol": symbol, "status": "Invalid amount"})
                         continue
 
-                    leverage = int(get_config(f"leverage_{symbol.replace('/', '_')}", 3))
+                    leverage = int(await get_config(f"leverage_{symbol.replace('/', '_')}", 3))
                     try:
                         await self.exchange.set_leverage(leverage, symbol=symbol_mapping[symbol])
                         log_action(f"Leverage set to {leverage}x for {symbol}")
@@ -318,7 +308,7 @@ class ChovusSmartBot:
                         "score": score,
                         "price": price
                     })
-                    self.log_candidate(symbol, price, score)
+                    await self.log_candidate(symbol, price, score)
                     if score > 0.5:
                         await self.place_trade(symbol_mapping[symbol], price, amount)
                         log_action(f"Trade placed for {symbol} with score {score:.2f}")
@@ -370,23 +360,24 @@ class ChovusSmartBot:
             sl_order = await self.exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, sl_price)
             logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
 
-            with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0) as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
-                conn.commit()
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
+                await conn.commit()
 
+            await self._send_telegram_message(f"Trade placed for {symbol}: {amount} @ {price} USDT")
             return order
         except Exception as e:
             logger.error(f"Error placing trade for {symbol}: {str(e)}")
+            await self._send_telegram_message(f"Error placing trade for {symbol}: {str(e)}")
             return None
 
     async def start_bot(self):
         self.running = True
-        # Proveri pozicije i režim pri pokretanju
         await self.fetch_positions()
         await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
         asyncio.create_task(self.maintain_order_book("ETHBTC"))
+        await self._send_telegram_message("Bot started")
         logger.info("Bot started")
 
     async def stop_bot(self):
@@ -395,6 +386,7 @@ class ChovusSmartBot:
             self._bot_task.cancel()
         try:
             await self.exchange.close()
+            await self._send_telegram_message("Bot stopped")
             logger.info("Exchange instance closed in stop_bot")
         except Exception as e:
             logger.error(f"Error closing exchange in stop_bot: {str(e)}")
@@ -406,26 +398,30 @@ class ChovusSmartBot:
     def set_bot_strategy(self, strategy_name: str):
         self.current_strategy = strategy_name
         logger.info(f"Strategy set to: {strategy_name}")
+        asyncio.create_task(self._send_telegram_message(f"Strategy set to: {strategy_name}"))
         return self.current_strategy
 
     def set_leverage(self, leverage: int, symbol: str = None):
         if symbol is None:
-            pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
+            pairs = asyncio.run(get_config("available_pairs", "BTC/USDT,ETH/USDT")).split(",")
             for sym in pairs:
                 try:
                     asyncio.create_task(self.exchange.set_leverage(leverage, symbol=sym))
                     logger.info(f"Leverage set to {leverage}x for {sym}")
+                    asyncio.create_task(self._send_telegram_message(f"Leverage set to {leverage}x for {sym}"))
                 except Exception as e:
                     logger.error(f"Failed to set leverage for {sym}: {str(e)}")
         else:
             try:
                 asyncio.create_task(self.exchange.set_leverage(leverage, symbol=symbol))
                 logger.info(f"Leverage set to {leverage}x for {symbol}")
+                asyncio.create_task(self._send_telegram_message(f"Leverage set to {leverage}x for {symbol}"))
             except Exception as e:
                 logger.error(f"Failed to set leverage for {symbol}: {str(e)}")
 
     def set_manual_amount(self, amount: float):
         logger.info(f"Manual amount set to {amount} USDT")
+        asyncio.create_task(self._send_telegram_message(f"Manual amount set to {amount} USDT"))
 
     async def _send_telegram_message(self, message: str):
         logger.info(f"Telegram message sent: {message}")
@@ -436,6 +432,9 @@ class ChovusSmartBot:
             candidates = await self._scan_pairs(limit=10)
             for symbol, price, volume, score, amount in candidates:
                 logger.info(f"Top candidate: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
+                await self._send_telegram_message(
+                    f"Top candidate: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}"
+                )
             await asyncio.sleep(60)
 
     async def get_candles(self, symbol: str, timeframe: str = '1h', limit: int = 150) -> pd.DataFrame:
@@ -491,19 +490,19 @@ class ChovusSmartBot:
         weights = pd.Series(range(1, period + 1))
         return series.rolling(period).apply(lambda x: (x * weights).sum() / weights.sum(), raw=True)
 
-    def log_candidate(self, symbol: str, price: float, score: float):
+    async def log_candidate(self, symbol: str, price: float, score: float):
         try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
-            conn.commit()
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
+                await conn.commit()
 
-            cursor.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
-            candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in cursor.fetchall()]
-            with open("user_data/candidates.json", "w") as f:
-                json.dump(candidates, f, indent=4)
+                cursor = await conn.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
+                candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in await cursor.fetchall()]
+                with open("user_data/candidates.json", "w") as f:
+                    json.dump(candidates, f, indent=4)
 
-            conn.close()
             logger.info(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
+            await self._send_telegram_message(f"Logged candidate: {symbol} | Price: {price:.4f} | Score: {score:.2f}")
         except Exception as e:
             logger.error(f"Error logging candidate for {symbol}: {str(e)}")
+            await self._send_telegram_message(f"Error logging candidate for {symbol}: {str(e)}")

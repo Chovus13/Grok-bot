@@ -1,7 +1,7 @@
 # config.py
 import aiosqlite
 import os
-from settings import DB_PATH  # Uvozi DB_PATH iz settings.py
+from settings import DB_PATH
 import logging
 
 logger = logging.getLogger(__name__)
@@ -17,25 +17,21 @@ DEFAULT_CONFIG = {
     "balance": "99"
 }
 
-def get_config(key: str, default=None):
+async def get_config(key: str, default=None):
     try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM config WHERE key=?", (key,))
-        result = cursor.fetchone()
-        conn.close()
-        return result[0] if result else DEFAULT_CONFIG.get(key, default)
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute("SELECT value FROM config WHERE key=?", (key,))
+            result = await cursor.fetchone()
+            return result[0] if result else DEFAULT_CONFIG.get(key, default)
     except Exception as e:
         logger.error(f"Error fetching config for {key}: {str(e)}")
         logger.warning(f"Falling back to default config for {key}")
         return DEFAULT_CONFIG.get(key, default)
 
-def set_config(key: str, value: str):
+async def set_config(key: str, value: str):
     try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
-        cursor = conn.cursor()
-        cursor.execute("REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
-        conn.commit()
-        conn.close()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
+            await conn.commit()
     except Exception as e:
         logger.error(f"Error setting config for {key}: {str(e)}")
