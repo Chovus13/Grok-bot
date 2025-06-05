@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 import logging
 from logging.handlers import RotatingFileHandler
 import aiosqlite
-
 from bot import ChovusSmartBot, init_db
 from config import get_config, set_config
 from settings import DB_PATH
@@ -64,14 +63,23 @@ async def log_requests(request: Request, call_next):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await init_db()
-    global bot
-    bot = ChovusSmartBot()
-    await bot.start_bot()
+    try:
+        await init_db()
+        logger.info("Database initialized successfully")
+        await bot.start_bot()
+    except Exception as e:
+        logger.error(f"Failed to initialize database or start bot: {str(e)}")
+        raise
     yield
-    # Shutdown
-    await bot.stop_bot()
+    try:
+        if bot.running:
+            await bot.stop_bot()
+            if bot._bot_task and not bot._bot_task.done():
+                await bot._bot_task
+        await bot.exchange.close()
+        logger.info("Exchange instance closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing exchange instance: {str(e)}")
     logger.info("Shutting down application")
 
 app = FastAPI(lifespan=lifespan)
