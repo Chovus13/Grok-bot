@@ -90,6 +90,7 @@ def _init_db_sync():
         """)
         conn.commit()
 
+# bot.py (ažuriraj inicijalizaciju exchange-a)
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
         self.api_key = api_key or get_config("api_key", os.getenv("API_KEY", ""))
@@ -102,15 +103,11 @@ class ChovusSmartBot:
             'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',  # Eksplicitno postavljamo futures
+                'defaultType': 'future',  # Osigurava futures tržište
             },
             'urls': {
                 'api': {
-                    'fapi': 'https://testnet.binancefuture.com'
-                }
-            } if testnet else {
-                'api': {
-                    'fapi': 'https://fapi.binance.com'
+                    'fapi': 'https://testnet.binancefuture.com' if testnet else 'https://fapi.binance.com/fapi/v3'
                 }
             }
         })
@@ -232,29 +229,32 @@ class ChovusSmartBot:
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
-            markets = {m['symbol']: m for m in self.exchange.markets.values() if
-                       m['type'] == 'future' and m['quote'] in ['USDT', 'BTC']}
-            log_action(f"Available futures markets: {list(markets.keys())[:10]}... (total: {len(markets)})")
+            # Filtriraj samo perpetual futures (bez datuma isteka)
+            markets = {
+                m['symbol']: m for m in self.exchange.markets.values()
+                if m['type'] == 'future' and m['quote'] in ['USDT', 'BTC'] and ':' not in m['symbol']
+            }
+            log_action(f"Available perpetual futures markets: {list(markets.keys())[:10]}... (total: {len(markets)})")
 
             normalized_markets = markets
 
-            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC")
+            available_pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
                 available_pairs = "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT"
                 set_config("available_pairs", available_pairs)
                 log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT")
             all_futures = available_pairs.split(",") if available_pairs else []
-            all_futures = [p.strip().upper() for p in all_futures if p.strip()]  # Normalizuj parove
+            all_futures = [p.strip().upper() for p in all_futures if p.strip()]
             log_action(f"Normalized pairs to scan: {all_futures}")
 
-            # Filtriraj parove koji postoje u marketima
             all_futures = [p for p in all_futures if p in normalized_markets]
             log_action(f"Valid futures pairs after filtering: {all_futures}")
 
             if not all_futures:
-                log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
-                self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
+                log_action(
+                    "No valid USDⓈ-M perpetual pairs found in markets. Available markets may not include perpetual futures.")
+                self.scanning_status = [{"symbol": "N/A", "status": "No perpetual pairs to scan"}]
                 return []
 
             symbol_mapping = {symbol: symbol for symbol in all_futures}
@@ -441,11 +441,12 @@ class ChovusSmartBot:
 
     async def start_bot(self):
         self.running = True
-        # Postavi Hedge mod
-        await self.set_position_mode(True)  # Promeni na False ako želiš One-way
-        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT").split(",")
+        # Postavi Hedge mod (opciono)
+        await self.set_position_mode(False)  # Ostavi One-way jer ti trenutno odgovara
+        # Postavi cross margin za sve parove
+        pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,ETH/BTC,SUNUSDT,CTSIUSDT").split(",")
         for symbol in pairs:
-            await self.set_margin_type(symbol, "ISOLATED")  # Ili "CROSS"
+            await self.set_margin_type(symbol, "CROSS")
         await self.fetch_positions()
         await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
