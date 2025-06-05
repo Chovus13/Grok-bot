@@ -221,7 +221,7 @@ class ChovusSmartBot:
                 if (m['type'] == 'future' and
                         m['quote'] == 'USDT' and
                         m['info'].get('contractType') == 'PERPETUAL' and
-                        ':USDT' in symbol):  # Osiguravamo da je format BTC/USDT:USDT
+                        ':USDT' in symbol):
                     markets[symbol] = m
             log_action(f"Available perpetual futures markets: {list(markets.keys())}")
 
