@@ -11,25 +11,22 @@ from dotenv import load_dotenv
 import logging
 from logging.handlers import RotatingFileHandler
 import aiosqlite
+
 from bot import ChovusSmartBot, init_db
 from config import get_config, set_config
 from settings import DB_PATH
 
-# Podesi logging sa rotacijom
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-# Kreiraj RotatingFileHandler
-file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)  # 10 MB po fajlu, čuvaj 5 backup fajlova
+file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-# Dodaj StreamHandler za konzolu
 stream_handler = logging.StreamHandler()
 stream_handler.setLevel(logging.DEBUG)
 stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-# Dodaj handlere u logger
 logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
 
@@ -44,7 +41,6 @@ templates = Jinja2Templates(directory="html")
 bot = ChovusSmartBot(testnet=False)
 bot_task = None
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,7 +50,6 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# Middleware za logovanje
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logger.info(f"Incoming request: {request.method} {request.url}")
@@ -65,10 +60,11 @@ async def log_requests(request: Request, call_next):
 async def lifespan(app: FastAPI):
     try:
         await init_db()
-        logger.info("Database initialized successfully")
+        await bot.initialize()  # Pozivamo asinhronu inicijalizaciju
+        logger.info("Database and bot initialized successfully")
         await bot.start_bot()
     except Exception as e:
-        logger.error(f"Failed to initialize database or start bot: {str(e)}")
+        logger.error(f"Failed to initialize database or bot: {str(e)}")
         raise
     yield
     try:
@@ -148,20 +144,20 @@ async def set_strategy_endpoint(request: StrategyRequest):
 @app.get("/api/balance")
 async def get_balance():
     try:
-        balance = await bot.fetch_balance()  # Zameni sa fetch_balance
-        total_balance = get_config("total_balance", "0")
+        balance = await bot.get_available_balance()
+        total_balance = await get_config("total_balance", "0")
         total_balance = float(total_balance) if total_balance else 0.0
         return {
             "wallet_balance": float(balance),
             "total_balance": total_balance,
-            "score": get_config("score", "0")
+            "score": await get_config("score", "0")
         }
     except Exception as e:
         logger.error(f"Error fetching balance: {str(e)}")
         return {
-            "wallet_balance": float(get_config("balance", "1000")),
+            "wallet_balance": float(await get_config("balance", "1000")),
             "total_balance": 0.0,
-            "score": get_config("score", "0")
+            "score": await get_config("score", "0")
         }
 
 @app.get("/api/trades")
@@ -174,8 +170,8 @@ async def get_trades():
         raise HTTPException(status_code=500, detail=f"Error fetching trades: {e}")
 
 @app.get("/api/pairs")
-def get_pairs():
-    pairs = get_config("available_pairs", "")
+async def get_pairs():
+    pairs = await get_config("available_pairs", "")
     return pairs.split(",") if pairs else []
 
 @app.post("/api/send_telegram")
@@ -185,11 +181,11 @@ async def send_telegram_endpoint(msg: TelegramMessage):
 @app.get("/api/market_data")
 async def get_market_data():
     try:
-        price = float(get_config("price", "0.0239"))
-        bid_wall = float(get_config("bid_wall", "0.0238"))
-        ask_wall = float(get_config("ask_wall", "0.0239"))
-        support = bid_wall * 1.005  # 0.5% iznad bid wall-a
-        resistance = ask_wall * 1.015  # 1.5% iznad ask wall-a
+        price = float(await get_config("price", "0.0239"))
+        bid_wall = float(await get_config("bid_wall", "0.0238"))
+        ask_wall = float(await get_config("ask_wall", "0.0239"))
+        support = bid_wall * 1.005
+        resistance = ask_wall * 1.015
         trend = "Bullish" if price > (support + resistance) / 2 else "Bearish"
         return {
             "price": price,
@@ -246,11 +242,11 @@ async def set_leverage(request: LeverageRequest):
     try:
         bot.set_leverage(request.leverage, symbol=request.symbol)
         if request.symbol:
-            set_config(f"leverage_{request.symbol.replace('/', '_')}", str(request.leverage))
+            await set_config(f"leverage_{request.symbol.replace('/', '_')}", str(request.leverage))
         else:
-            pairs = get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
+            pairs = (await get_config("available_pairs", "BTC/USDT,ETH/USDT,SOL/USDT")).split(",")
             for sym in pairs:
-                set_config(f"leverage_{sym.replace('/', '_')}", str(request.leverage))
+                await set_config(f"leverage_{sym.replace('/', '_')}", str(request.leverage))
         return {"status": f"Leverage set to: {request.leverage}x"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting leverage: {e}")
@@ -259,7 +255,7 @@ async def set_leverage(request: LeverageRequest):
 async def set_manual_amount(request: AmountRequest):
     try:
         bot.set_manual_amount(request.amount)
-        set_config("manual_amount", str(request.amount))
+        await set_config("manual_amount", str(request.amount))
         return {"status": f"Manual amount set to: {request.amount} USDT"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting manual amount: {e}")
@@ -270,7 +266,7 @@ async def show_logs(request: Request):
         logs = []
         with open("bot.log", "r") as f:
             lines = f.readlines()
-            for line in lines[-100:]:  # Prikazujemo poslednjih 100 logova
+            for line in lines[-100:]:
                 parts = line.strip().split(" - ", 2)
                 if len(parts) != 3:
                     continue

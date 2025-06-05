@@ -6,7 +6,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Fallback konfiguracija ako SQLite ne radi
 DEFAULT_CONFIG = {
     "api_key": os.getenv("API_KEY", ""),
     "api_secret": os.getenv("API_SECRET", ""),
