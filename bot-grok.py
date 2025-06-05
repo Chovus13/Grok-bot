@@ -393,21 +393,7 @@ class ChovusSmartBot:
         except Exception as e:
             logger.error(f"Error calculating amount for {symbol}: {str(e)}")
             return 0
-# preskocio
-#     async def place_trade(self, symbol: str, price: float, amount: float):
-#         try:
-#             order = await self.exchange.create_market_buy_order(symbol, amount)
-#             logger.info(f"Placed trade for {symbol}: {order}")
-#             # Upisuj trejd u bazu
-#             timestamp = int(time.time())
-#             with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
-#                 cursor = conn.cursor()
-#                 cursor.execute("INSERT INTO trades (symbol, price, amount, timestamp) VALUES (?, ?, ?, ?)",
-#                                (symbol, price, amount, timestamp))
-#                 conn.commit()
-#                 logger.debug(f"Logged trade to DB: {symbol} | Price: {price:.4f} | Amount: {amount}")
-#         except Exception as e:
-#             logger.error(f"Error placing trade for {symbol}: {str(e)}")
+
 
     async def place_trade(self, symbol: str, price: float, amount: float):
         try:
@@ -561,13 +547,35 @@ class ChovusSmartBot:
         logger.info(f"Telegram message sent: {message}")
         return {"status": "Message sent"}
 
-    # bot.py (u metodi run)
+    async def fetch_negative_balance(self, start_time: int, end_time: int):
+        try:
+            params = {
+                'startTime': start_time,
+                'endTime': end_time,
+                'recvWindow': 5000,
+                'timestamp': int(time.time() * 1000)
+            }
+            response = await self.exchange.papi_get_portfolio_negative_balance_exchange_record(params=params)
+            logger.info(f"Fetched negative balance exchange record: {response}")
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching negative balance: {str(e)}")
+            return {"total": 0, "rows": []}
+
     async def run(self):
         while self.running:
-            candidates = await self._scan_pairs(limit=10)
-            for symbol, price, volume, score, amount in candidates:
-                logger.info(f"Top candidate: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
-            await asyncio.sleep(120)  # Povećaj sa 60 na 120 sekundi
+            try:
+                # Skeniraj parove svakih 5 minuta
+                await self._scan_pairs()
+                # Proveri negativni balans za poslednja 24 sata
+                end_time = int(time.time() * 1000)
+                start_time = end_time - 24 * 60 * 60 * 1000  # 24 sata unazad
+                negative_balance = await self.fetch_negative_balance(start_time, end_time)
+                if negative_balance['total'] > 0:
+                    logger.warning(f"Negative balance detected: {negative_balance}")
+            except Exception as e:
+                logger.error(f"Error in bot run loop: {str(e)}")
+            await asyncio.sleep(300)  # 5 minuta
 
     async def get_candles(self, symbol: str, timeframe: str = '1h', limit: int = 150) -> pd.DataFrame:
         try:
