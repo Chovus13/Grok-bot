@@ -51,7 +51,7 @@ async def init_db():
                     value TEXT
                 )
             """)
-            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT,ETH/USDT"))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT:USDT,ETH/USDT:USDT"))
             await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
             await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
             await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
@@ -91,7 +91,6 @@ async def init_db():
 
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
-        # Privremeno postavljamo None, inicijalizacija u async initialize metodi
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
@@ -105,7 +104,6 @@ class ChovusSmartBot:
         self.position_mode = "One-way"
 
     async def initialize(self):
-        """Asinhrona inicijalizacija API ključeva i Binance klijenta."""
         try:
             self.api_key = self.api_key or await get_config("api_key", os.getenv("API_KEY", ""))
             self.api_secret = self.api_secret or await get_config("api_secret", os.getenv("API_SECRET", ""))
@@ -118,10 +116,14 @@ class ChovusSmartBot:
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',
+                    'adjustForTimeDifference': True,
                 },
                 'urls': {
                     'api': {
                         'fapi': 'https://testnet.binancefuture.com' if self.testnet else 'https://fapi.binance.com'
+                    },
+                    'ws': {
+                        'fapi': 'wss://testnet.binancefuture.com/fws' if self.testnet else 'wss://fapi.binance.com/fws'
                     }
                 }
             })
@@ -165,17 +167,22 @@ class ChovusSmartBot:
             logger.warning(f"Using fallback balance: {fallback} USDT")
             return fallback
 
-    async def maintain_order_book(self, symbol="ETHBTC"):
+    async def maintain_order_book(self, symbol="BTC/USDT:USDT"):
         try:
+            # Inicijalni snapshot preko REST-a
             snapshot = await self.exchange.fetch_order_book(symbol, limit=1000)
+            if 'lastUpdateId' not in snapshot:
+                raise KeyError("'lastUpdateId' not in order book snapshot")
             self.order_book["lastUpdateId"] = snapshot["lastUpdateId"]
             self.order_book["bids"] = {float(price): float(amount) for price, amount in snapshot["bids"]}
             self.order_book["asks"] = {float(price): float(amount) for price, amount in snapshot["asks"]}
             logger.info(f"Order book snapshot fetched for {symbol}: lastUpdateId={self.order_book['lastUpdateId']}")
 
-            stream_name = f"{symbol.lower()}@depth"
-            async for event in self.exchange.watch_order_book(symbol, params={"streams": stream_name}):
+            # WebSocket stream za ažuriranja
+            stream_name = f"{symbol.lower().replace('/', '').replace(':usdt', '@depth@100ms')}"
+            async for event in self.exchange.watch_order_book(symbol):
                 if "u" not in event or "U" not in event:
+                    logger.debug(f"Skipping event without update IDs: {event}")
                     continue
 
                 update_id = event["u"]
@@ -183,6 +190,7 @@ class ChovusSmartBot:
                 previous_update_id = event.get("pu", 0)
 
                 if update_id < self.order_book["lastUpdateId"]:
+                    logger.debug(f"Skipping outdated update for {symbol}: update_id={update_id}")
                     continue
 
                 if first_update_id <= self.order_book["lastUpdateId"] and update_id >= self.order_book["lastUpdateId"]:
@@ -223,27 +231,31 @@ class ChovusSmartBot:
 
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
         log_action = logger.debug
-        log_action("Starting pair scanning for USDⓈ-M Futures...")
+        log_action("Starting pair scanning for USDⓈ-M Perpetual Futures...")
 
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
-            markets = {m['symbol']: m for m in self.exchange.markets.values() if m['type'] == 'future' and m['quote'] == 'USDT'}
-            log_action(f"Available futures markets: {list(markets.keys())}")
+            # Filtriramo samo perpetual USD-M Futures parove
+            markets = {
+                m['symbol']: m for m in self.exchange.markets.values()
+                if m['type'] == 'future' and m['quote'] == 'USDT' and m['contractType'] == 'PERPETUAL'
+            }
+            log_action(f"Available perpetual futures markets: {list(markets.keys())}")
 
             normalized_markets = markets
 
-            available_pairs = await get_config("available_pairs", "BTC/USDT,ETH/USDT")
+            available_pairs = await get_config("available_pairs", "BTC/USDT:USDT,ETH/USDT:USDT")
             log_action(f"Raw available_pairs from config: {available_pairs}")
             if not available_pairs:
-                available_pairs = "BTC/USDT,ETH/USDT"
-                log_action("No available_pairs in config, using default: BTC/USDT,ETH/USDT")
+                available_pairs = "BTC/USDT:USDT,ETH/USDT:USDT"
+                log_action("No available_pairs in config, using default: BTC/USDT:USDT,ETH/USDT:USDT")
             all_futures = available_pairs.split(",") if available_pairs else []
             all_futures = [p for p in all_futures if p in normalized_markets]
-            log_action(f"Scanning {len(all_futures)} predefined pairs: {all_futures}...")
+            log_action(f"Scanning {len(all_futures)} predefined perpetual pairs: {all_futures}...")
 
             if not all_futures:
-                log_action("No valid USDⓈ-M pairs defined in config or markets. Add pairs to scan.")
+                log_action("No valid USDⓈ-M perpetual pairs defined in config or markets. Add pairs to scan.")
                 self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
                 return []
 
@@ -253,7 +265,7 @@ class ChovusSmartBot:
             try:
                 tickers = {}
                 for symbol in all_futures:
-                    ticker = await self.exchange.fetch_ticker(symbol)
+                    ticker = await self.exchange.watch_ticker(symbol)
                     tickers[symbol] = ticker
                 log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
@@ -292,7 +304,7 @@ class ChovusSmartBot:
                         self.scanning_status.append({"symbol": symbol, "status": "Invalid amount"})
                         continue
 
-                    leverage = int(await get_config(f"leverage_{symbol.replace('/', '_')}", 3))
+                    leverage = int(await get_config(f"leverage_{symbol.replace('/', '_').replace(':USDT', '')}", 3))
                     try:
                         await self.exchange.set_leverage(leverage, symbol=symbol_mapping[symbol])
                         log_action(f"Leverage set to {leverage}x for {symbol}")
@@ -389,13 +401,13 @@ class ChovusSmartBot:
 
     async def start_bot(self):
         try:
-            await init_db()  # Osiguravamo da je baza kreirana
-            await self.initialize()  # Asinhrona inicijalizacija
+            await init_db()
+            await self.initialize()
             self.running = True
             await self.fetch_positions()
             await self.fetch_position_mode()
             self._bot_task = asyncio.create_task(self.run())
-            asyncio.create_task(self.maintain_order_book("ETHBTC"))
+            asyncio.create_task(self.maintain_order_book("BTC/USDT:USDT"))
             await self._send_telegram_message("Bot started")
             logger.info("Bot started")
         except Exception as e:
@@ -408,7 +420,8 @@ class ChovusSmartBot:
         if self._bot_task:
             self._bot_task.cancel()
         try:
-            await self.exchange.close()
+            if self.exchange:
+                await self.exchange.close()
             await self._send_telegram_message("Bot stopped")
             logger.info("Exchange instance closed in stop_bot")
         except Exception as e:
@@ -426,7 +439,7 @@ class ChovusSmartBot:
 
     def set_leverage(self, leverage: int, symbol: str = None):
         if symbol is None:
-            pairs = asyncio.run(get_config("available_pairs", "BTC/USDT,ETH/USDT")).split(",")
+            pairs = asyncio.run(get_config("available_pairs", "BTC/USDT:USDT,ETH/USDT:USDT")).split(",")
             for sym in pairs:
                 try:
                     asyncio.create_task(self.exchange.set_leverage(leverage, symbol=sym))
@@ -448,7 +461,7 @@ class ChovusSmartBot:
 
     async def _send_telegram_message(self, message: str):
         logger.info(f"Telegram message sent: {message}")
-        # TODO: Dodati stvarnu Telegram implementaciju (npr. python-telegram-bot ili aiohttp)
+        # Placeholder za python-telegram-bot implementaciju
         return {"status": "Message sent"}
 
     async def run(self):

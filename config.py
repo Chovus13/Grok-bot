@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "api_key": os.getenv("API_KEY", ""),
     "api_secret": os.getenv("API_SECRET", ""),
-    "available_pairs": "BTC/USDT,ETH/USDT,SOL/USDT",
+    "available_pairs": "BTC/USDT:USDT,ETH/USDT:USDT",
     "leverage_BTC_USDT": "10",
     "leverage_ETH_USDT": "10",
     "leverage_SOL_USDT": "10",
