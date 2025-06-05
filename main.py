@@ -148,6 +148,7 @@ async def get_balance():
         balance = await bot.get_available_balance()
         total_balance = await get_config("total_balance", "0")
         total_balance = float(total_balance) if total_balance else 0.0
+        logger.info(f"Returning balance: wallet_balance={balance}, total_balance={total_balance}")
         return {
             "wallet_balance": float(balance),
             "total_balance": total_balance,
@@ -155,9 +156,13 @@ async def get_balance():
         }
     except Exception as e:
         logger.error(f"Error fetching balance: {str(e)}")
+        # Ažuriramo fallback da koristi najnoviji balans iz bota
+        balance = await bot.get_available_balance()
+        total_balance = float(await get_config("total_balance", "0"))
+        logger.info(f"Fallback balance: wallet_balance={balance}, total_balance={total_balance}")
         return {
-            "wallet_balance": float(await get_config("balance", "1000")),
-            "total_balance": 0.0,
+            "wallet_balance": float(balance),
+            "total_balance": total_balance,
             "score": await get_config("score", "0")
         }
 

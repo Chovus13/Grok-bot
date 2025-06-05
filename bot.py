@@ -16,7 +16,7 @@ from pprint import pprint
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)
+file_handler = RotatingFileHandler("bot.log", maxBytes=10 * 1024 * 1024, backupCount=5)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
@@ -32,6 +32,7 @@ load_dotenv()
 # Kreiranje user_data foldera ako ne postoji
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
+
 def table(values):
     """Formatira listu dict-ova u tabelu za prikaz."""
     if not values:
@@ -42,6 +43,7 @@ def table(values):
     string = ' | '.join(['{:<' + str(w) + '}' for w in widths])
     return "\n".join([string.format(*[str(v[k]) for k in keys]) for v in values])
 
+
 async def init_db():
     try:
         async with aiosqlite.connect(DB_PATH) as conn:
@@ -51,12 +53,15 @@ async def init_db():
                     value TEXT
                 )
             """)
-            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("available_pairs", "BTC/USDT:USDT,ETH/USDT:USDT"))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                               ("available_pairs", "BTC/USDT:USDT,ETH/USDT:USDT"))
             await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_BTC_USDT", "3"))
             await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("leverage_ETH_USDT", "3"))
             await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("balance", "1000"))
-            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_key", os.getenv("API_KEY", "")))
-            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("api_secret", os.getenv("API_SECRET", "")))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                               ("api_key", os.getenv("API_KEY", "")))
+            await conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                               ("api_secret", os.getenv("API_SECRET", "")))
 
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS trades (
@@ -88,6 +93,7 @@ async def init_db():
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
         raise
+
 
 class ChovusSmartBot:
     def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
@@ -128,6 +134,8 @@ class ChovusSmartBot:
                 }
             })
             self.exchange.set_sandbox_mode(self.testnet)
+            # Sinhronizacija vremena sa Binance serverom
+            await self.exchange.load_time_difference()
             logger.info("Exchange initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing bot: {str(e)}")
@@ -155,8 +163,8 @@ class ChovusSmartBot:
     async def get_available_balance(self) -> float:
         try:
             balance = await self.exchange.fetch_balance(params={"type": "future"})
-            available = float(balance['USDT'].get('free', 0))
-            total = float(balance['USDT'].get('total', 0))
+            available = float(balance['USDT'].get('free', 0.0))
+            total = float(balance['USDT'].get('total', 0.0))
             logger.info(f"Fetched available balance: {available} USDT | Total: {total} USDT")
             await set_config("balance", str(available))
             await set_config("total_balance", str(total))
@@ -169,55 +177,22 @@ class ChovusSmartBot:
 
     async def maintain_order_book(self, symbol="BTC/USDT:USDT"):
         try:
-            # Inicijalni snapshot preko REST-a
-            snapshot = await self.exchange.fetch_order_book(symbol, limit=1000)
-            if 'lastUpdateId' not in snapshot:
-                raise KeyError("'lastUpdateId' not in order book snapshot")
-            self.order_book["lastUpdateId"] = snapshot["lastUpdateId"]
+            # Koristimo samo REST za sada
+            snapshot = await self.exchange.fetch_order_book(symbol.replace(':USDT', ''), limit=1000)
+            self.order_book["lastUpdateId"] = snapshot.get("lastUpdateId", 0)
             self.order_book["bids"] = {float(price): float(amount) for price, amount in snapshot["bids"]}
             self.order_book["asks"] = {float(price): float(amount) for price, amount in snapshot["asks"]}
             logger.info(f"Order book snapshot fetched for {symbol}: lastUpdateId={self.order_book['lastUpdateId']}")
 
-            # WebSocket stream za ažuriranja
-            stream_name = f"{symbol.lower().replace('/', '').replace(':usdt', '@depth@100ms')}"
-            async for event in self.exchange.watch_order_book(symbol):
-                if "u" not in event or "U" not in event:
-                    logger.debug(f"Skipping event without update IDs: {event}")
-                    continue
-
-                update_id = event["u"]
-                first_update_id = event["U"]
-                previous_update_id = event.get("pu", 0)
-
-                if update_id < self.order_book["lastUpdateId"]:
-                    logger.debug(f"Skipping outdated update for {symbol}: update_id={update_id}")
-                    continue
-
-                if first_update_id <= self.order_book["lastUpdateId"] and update_id >= self.order_book["lastUpdateId"]:
-                    pass
-                elif previous_update_id != self.order_book["lastUpdateId"]:
-                    logger.warning(f"Order book out of sync for {symbol}, restarting...")
-                    await self.maintain_order_book(symbol)
-                    return
-
-                for price, amount in event["bids"]:
-                    price = float(price)
-                    amount = float(amount)
-                    if amount == 0:
-                        self.order_book["bids"].pop(price, None)
-                    else:
-                        self.order_book["bids"][price] = amount
-
-                for price, amount in event["asks"]:
-                    price = float(price)
-                    amount = float(amount)
-                    if amount == 0:
-                        self.order_book["asks"].pop(price, None)
-                    else:
-                        self.order_book["asks"][price] = amount
-
-                self.order_book["lastUpdateId"] = update_id
-                logger.debug(f"Order book updated for {symbol}: lastUpdateId={update_id}")
+            # Privremeno onemogućavamo WebSocket dok ne popravimo
+            # Ažuriraj svakih 5 sekundi
+            while self.running:
+                await asyncio.sleep(5)
+                snapshot = await self.exchange.fetch_order_book(symbol.replace(':USDT', ''), limit=1000)
+                self.order_book["lastUpdateId"] = snapshot.get("lastUpdateId", 0)
+                self.order_book["bids"] = {float(price): float(amount) for price, amount in snapshot["bids"]}
+                self.order_book["asks"] = {float(price): float(amount) for price, amount in snapshot["asks"]}
+                logger.debug(f"Order book updated for {symbol}: lastUpdateId={self.order_book['lastUpdateId']}")
         except Exception as e:
             logger.error(f"Error maintaining order book for {symbol}: {str(e)}")
             await asyncio.sleep(5)
@@ -236,11 +211,18 @@ class ChovusSmartBot:
         try:
             log_action("Fetching exchange info...")
             await self.exchange.load_markets()
+            # Logujemo sirove podatke za proveru
+            log_action(f"Raw markets: {list(self.exchange.markets.keys())}")
             # Filtriramo samo perpetual USD-M Futures parove
-            markets = {
-                m['symbol']: m for m in self.exchange.markets.values()
-                if m['type'] == 'future' and m['quote'] == 'USDT' and m['contractType'] == 'PERPETUAL'
-            }
+            markets = {}
+            for symbol, m in self.exchange.markets.items():
+                # Logujemo info za proveru
+                log_action(f"Market info for {symbol}: {m['info']}")
+                if (m['type'] == 'future' and
+                        m['quote'] == 'USDT' and
+                        m['info'].get('contractType') == 'PERPETUAL' and
+                        ':USDT' in symbol):  # Osiguravamo da je format BTC/USDT:USDT
+                    markets[symbol] = m
             log_action(f"Available perpetual futures markets: {list(markets.keys())}")
 
             normalized_markets = markets
@@ -251,6 +233,7 @@ class ChovusSmartBot:
                 available_pairs = "BTC/USDT:USDT,ETH/USDT:USDT"
                 log_action("No available_pairs in config, using default: BTC/USDT:USDT,ETH/USDT:USDT")
             all_futures = available_pairs.split(",") if available_pairs else []
+            # Prilagođavamo format jer su simboli u markets u obliku BTC/USDT:USDT
             all_futures = [p for p in all_futures if p in normalized_markets]
             log_action(f"Scanning {len(all_futures)} predefined perpetual pairs: {all_futures}...")
 
@@ -261,11 +244,11 @@ class ChovusSmartBot:
 
             symbol_mapping = {symbol: symbol for symbol in all_futures}
 
-            log_action("Fetching tickers using WebSocket...")
+            log_action("Fetching tickers using REST...")
             try:
                 tickers = {}
                 for symbol in all_futures:
-                    ticker = await self.exchange.watch_ticker(symbol)
+                    ticker = await self.exchange.fetch_ticker(symbol)
                     tickers[symbol] = ticker
                 log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
@@ -287,12 +270,15 @@ class ChovusSmartBot:
                     volume = ticker.get('quoteVolume', 0)
                     if not (volume and price and price > 0):
                         log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
-                        self.scanning_status.append({"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
+                        self.scanning_status.append(
+                            {"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
                         continue
 
                     market = normalized_markets.get(symbol, {})
-                    lot_size = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
-                    price_filter = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
+                    lot_size = next(
+                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
+                    price_filter = next(
+                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
 
                     min_qty = float(lot_size.get('minQty', 0))
                     max_qty = float(lot_size.get('maxQty', float('inf')))
@@ -317,7 +303,8 @@ class ChovusSmartBot:
                     df = await self.get_candles(symbol_mapping[symbol], timeframe='1h', limit=150)
                     if df.empty or len(df) < 150:
                         log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
-                        self.scanning_status.append({"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
+                        self.scanning_status.append(
+                            {"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
                         continue
 
                     log_action(f"Calculating indicators for {symbol}...")
@@ -342,7 +329,8 @@ class ChovusSmartBot:
                         log_action(f"Trade placed for {symbol} with score {score:.2f}")
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
-                        log_action(f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
+                        log_action(
+                            f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
                 except Exception as e:
                     log_action(f"Error scanning {symbol}: {str(e)}")
                     self.scanning_status.append({"symbol": symbol, "status": f"Error: {str(e)}"})
@@ -357,7 +345,8 @@ class ChovusSmartBot:
             self.scanning_status = [{"symbol": "N/A", "status": f"Error in pair scanning: {str(e)}"}]
             return []
 
-    async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float, step_size: float) -> float:
+    async def calculate_amount(self, symbol: str, price: float, min_qty: float, max_qty: float,
+                               step_size: float) -> float:
         try:
             balance = await self.get_available_balance()
             target_risk = balance * 0.1 / price
@@ -381,7 +370,9 @@ class ChovusSmartBot:
             logger.info(f"Placed buy order for {symbol}: {amount} @ {price} USDT | Order ID: {order['id']}")
 
             tp_price = price * 1.02
-            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price, params={"stopPrice": tp_price, "type": "TAKE_PROFIT"})
+            tp_order = await self.exchange.create_limit_sell_order(symbol, amount, tp_price,
+                                                                   params={"stopPrice": tp_price,
+                                                                           "type": "TAKE_PROFIT"})
             logger.info(f"Placed TP order for {symbol}: {amount} @ {tp_price} USDT | Order ID: {tp_order['id']}")
 
             sl_price = price * 0.99
@@ -389,7 +380,8 @@ class ChovusSmartBot:
             logger.info(f"Placed SL order for {symbol}: {amount} @ {sl_price} USDT | Order ID: {sl_order['id']}")
 
             async with aiosqlite.connect(DB_PATH) as conn:
-                await conn.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)", (symbol, price, "OPEN"))
+                await conn.execute("INSERT INTO trades (symbol, price, outcome) VALUES (?, ?, ?)",
+                                   (symbol, price, "OPEN"))
                 await conn.commit()
 
             await self._send_telegram_message(f"Trade placed for {symbol}: {amount} @ {price} USDT")
@@ -461,7 +453,6 @@ class ChovusSmartBot:
 
     async def _send_telegram_message(self, message: str):
         logger.info(f"Telegram message sent: {message}")
-        # Placeholder za python-telegram-bot implementaciju
         return {"status": "Message sent"}
 
     async def run(self):
@@ -530,11 +521,14 @@ class ChovusSmartBot:
     async def log_candidate(self, symbol: str, price: float, score: float):
         try:
             async with aiosqlite.connect(DB_PATH) as conn:
-                await conn.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)", (symbol, price, score))
+                await conn.execute("INSERT INTO candidates (symbol, price, score) VALUES (?, ?, ?)",
+                                   (symbol, price, score))
                 await conn.commit()
 
-                cursor = await conn.execute("SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
-                candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in await cursor.fetchall()]
+                cursor = await conn.execute(
+                    "SELECT symbol, price, score, timestamp FROM candidates ORDER BY score DESC, id DESC")
+                candidates = [{"symbol": s, "price": p, "score": sc, "time": t} for s, p, sc, t in
+                              await cursor.fetchall()]
                 with open("user_data/candidates.json", "w") as f:
                     json.dump(candidates, f, indent=4)
 
