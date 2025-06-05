@@ -205,23 +205,21 @@ class ChovusSmartBot:
         }
 
     async def _scan_pairs(self, limit: int = 10) -> List[Tuple[str, float, float, float, float]]:
-        log_action = logger.debug
+        log_action = logger.info  # Smanjujemo na INFO nivo
         log_action("Starting pair scanning for USDⓈ-M Perpetual Futures...")
 
         try:
             log_action("Fetching exchange info...")
-            await self.exchange.load_markets()
-            # Logujemo sirove podatke za proveru
-            log_action(f"Raw markets: {list(self.exchange.markets.keys())}")
-            # Filtriramo samo perpetual USD-M Futures parove
+            await self.exchange.load_markets(params={'type': 'future'})
+            markets_to_log = list(self.exchange.markets.keys())[:10]
+            log_action(f"Raw markets (first 10): {markets_to_log}")
+
             markets = {}
             for symbol, m in self.exchange.markets.items():
-                # Logujemo info za proveru
-                log_action(f"Market info for {symbol}: {m['info']}")
                 if (m['type'] == 'future' and
-                        m['quote'] == 'USDT' and
-                        m['info'].get('contractType') == 'PERPETUAL' and
-                        ':USDT' in symbol):
+                    m['quote'] == 'USDT' and
+                    m['info'].get('contractType') == 'PERPETUAL' and
+                    ':USDT' in symbol):
                     markets[symbol] = m
             log_action(f"Available perpetual futures markets: {list(markets.keys())}")
 
@@ -233,7 +231,6 @@ class ChovusSmartBot:
                 available_pairs = "BTC/USDT:USDT,ETH/USDT:USDT"
                 log_action("No available_pairs in config, using default: BTC/USDT:USDT,ETH/USDT:USDT")
             all_futures = available_pairs.split(",") if available_pairs else []
-            # Prilagođavamo format jer su simboli u markets u obliku BTC/USDT:USDT
             all_futures = [p for p in all_futures if p in normalized_markets]
             log_action(f"Scanning {len(all_futures)} predefined perpetual pairs: {all_futures}...")
 
@@ -242,13 +239,15 @@ class ChovusSmartBot:
                 self.scanning_status = [{"symbol": "N/A", "status": "No pairs to scan"}]
                 return []
 
-            symbol_mapping = {symbol: symbol for symbol in all_futures}
+            # Prilagođavamo simbol za fetch_ticker
+            symbol_mapping = {symbol: symbol.replace('/', '').replace(':USDT', '') for symbol in all_futures}
 
             log_action("Fetching tickers using REST...")
             try:
                 tickers = {}
                 for symbol in all_futures:
-                    ticker = await self.exchange.fetch_ticker(symbol)
+                    ticker_symbol = symbol_mapping[symbol]  # Koristimo BTCUSDT umesto BTC/USDT:USDT
+                    ticker = await self.exchange.fetch_ticker(ticker_symbol)
                     tickers[symbol] = ticker
                 log_action(f"Fetched tickers for {len(tickers)} pairs: {list(tickers.keys())[:5]}...")
             except Exception as e:
@@ -268,17 +267,15 @@ class ChovusSmartBot:
 
                     price = ticker.get('last', 0)
                     volume = ticker.get('quoteVolume', 0)
+                    log_action(f"Ticker data for {symbol} | Price: {price} | Volume: {volume}")
                     if not (volume and price and price > 0):
                         log_action(f"Invalid ticker data for {symbol} | Price: {price} | Volume: {volume}")
-                        self.scanning_status.append(
-                            {"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
+                        self.scanning_status.append({"symbol": symbol, "status": f"Invalid ticker data | Price: {price} | Volume: {volume}"})
                         continue
 
                     market = normalized_markets.get(symbol, {})
-                    lot_size = next(
-                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
-                    price_filter = next(
-                        (f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
+                    lot_size = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'LOT_SIZE'), {})
+                    price_filter = next((f for f in market.get('info', {}).get('filters', []) if f['filterType'] == 'PRICE_FILTER'), {})
 
                     min_qty = float(lot_size.get('minQty', 0))
                     max_qty = float(lot_size.get('maxQty', float('inf')))
@@ -303,8 +300,7 @@ class ChovusSmartBot:
                     df = await self.get_candles(symbol_mapping[symbol], timeframe='1h', limit=150)
                     if df.empty or len(df) < 150:
                         log_action(f"Not enough data for {symbol} (candles: {len(df)}), skipping.")
-                        self.scanning_status.append(
-                            {"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
+                        self.scanning_status.append({"symbol": symbol, "status": f"Not enough data (candles: {len(df)})"})
                         continue
 
                     log_action(f"Calculating indicators for {symbol}...")
@@ -329,8 +325,7 @@ class ChovusSmartBot:
                         log_action(f"Trade placed for {symbol} with score {score:.2f}")
                     if score > 0.2:
                         pairs.append((symbol, price, volume, score, amount))
-                        log_action(
-                            f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
+                        log_action(f"Candidate selected: {symbol} | Price: {price:.4f} | Amount: {amount} | Score: {score:.2f}")
                 except Exception as e:
                     log_action(f"Error scanning {symbol}: {str(e)}")
                     self.scanning_status.append({"symbol": symbol, "status": f"Error: {str(e)}"})

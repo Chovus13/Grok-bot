@@ -7,14 +7,18 @@ from logging.handlers import RotatingFileHandler
 import aiosqlite
 from config import get_config, set_config
 from settings import DB_PATH
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
+# Montiramo html folder za statičke fajlove
+app.mount("/html", StaticFiles(directory="html"), name="html")
+
 # Postavljanje logovanja
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)  # Smanjujemo na INFO
 file_handler = RotatingFileHandler("app.log", maxBytes=10*1024*1024, backupCount=5)
-file_handler.setLevel(logging.DEBUG)
+file_handler.setLevel(logging.INFO)  # Smanjujemo na INFO
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
 
@@ -33,6 +37,23 @@ async def shutdown_event():
 @app.get("/api/status")
 async def get_status():
     return {"status": bot.get_bot_status()}
+
+@app.post("/api/start")
+async def start_bot():
+    await bot.start_bot()
+    return {"status": "Bot started"}
+
+@app.post("/api/stop")
+async def stop_bot():
+    await bot.stop_bot()
+    return {"status": "Bot stopped"}
+
+@app.post("/api/set_strategy")
+async def set_strategy(request: dict):
+    strategy = request.get("strategy", "Default")
+    bot.set_bot_strategy(strategy)
+    await set_config("strategy", strategy)
+    return {"status": f"Strategy set to {strategy}"}
 
 @app.get("/api/balance")
 async def get_balance():
@@ -123,5 +144,10 @@ async def get_logs():
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    with open("index.html", "r") as f:
+    with open("html/index.html", "r") as f:
+        return f.read()
+
+@app.get("/logs.html", response_class=HTMLResponse)
+async def read_logs():
+    with open("html/logs.html", "r") as f:
         return f.read()

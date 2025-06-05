@@ -3,9 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <title>Chovus Smart Bot</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        select { padding: 5px; margin: 5px; }
+        pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+    </style>
 </head>
 <body>
     <h1>Chovus Smart Bot</h1>
+    <div>
+        <h2>Bot Controls</h2>
+        <button id="start-bot">Start Bot</button>
+        <button id="stop-bot">Stop Bot</button>
+        <p>Bot Status: <span id="bot-status">Loading...</span></p>
+    </div>
     <div>
         <h2>Balance</h2>
         <p>Wallet Balance: <span id="wallet-balance">Loading...</span> USDT</p>
@@ -14,17 +26,17 @@
     </div>
     <div>
         <h2>Market Data</h2>
-        <pre id="market-data">Loading...</pre> <!-- Promenjeno u <pre> za bolji prikaz JSON-a -->
+        <pre id="market-data">Loading...</pre>
     </div>
     <div>
         <h2>Strategy</h2>
         <select id="strategy-select">
-            <!-- Uklonjen <i> tag i popravljena struktura -->
-            <option value="RSI" class="strategy-option">RSI</option>
-            <option value="SMA" class="strategy-option">SMA</option>
-            <option value="DCA" class="strategy-option">DCA</option>
-            <option value="Default" class="strategy-option">Default</option>
+            <option value="RSI">RSI</option>
+            <option value="SMA">SMA</option>
+            <option value="DCA">DCA</option>
+            <option value="Default">Default</option>
         </select>
+        <button id="set-strategy">Set Strategy</button>
     </div>
     <div>
         <h2>Logs</h2>
@@ -50,7 +62,6 @@
                 totalBalanceElement.textContent = data.total_balance || '0.0';
                 scoreElement.textContent = data.score || '0';
 
-                // Umesto get_config, koristimo API poziv
                 const strategyResponse = await fetch('http://localhost:8000/api/config?key=strategy');
                 const strategyData = await strategyResponse.json();
                 const strategy = strategyData.value || 'Default';
@@ -77,12 +88,12 @@
                 marketDataElement.textContent = JSON.stringify(data, null, 2);
             } catch (error) {
                 console.error('Error fetching market data:', error);
+                document.getElementById('market-data').textContent = 'Error loading market data';
             }
         }
 
         async function fetchLogs() {
             try {
-                // Popravljamo URL na /logs umesto /api/logs
                 const response = await fetch('http://localhost:8000/logs');
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
@@ -92,9 +103,64 @@
                     throw new Error('Logs element not found in DOM');
                 }
 
-                logsElement.textContent = JSON.stringify(data, null, 2);
+                logsElement.textContent = data.join('\n');
             } catch (error) {
                 console.error('Error fetching logs:', error);
+                document.getElementById('logs').textContent = 'Error loading logs';
+            }
+        }
+
+        async function fetchBotStatus() {
+            try {
+                const response = await fetch('http://localhost:8000/api/status');
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+
+                const statusElement = document.getElementById('bot-status');
+                if (!statusElement) {
+                    throw new Error('Bot status element not found in DOM');
+                }
+
+                statusElement.textContent = data.status || 'Unknown';
+            } catch (error) {
+                console.error('Error fetching bot status:', error);
+                document.getElementById('bot-status').textContent = 'Error loading status';
+            }
+        }
+
+        async function startBot() {
+            try {
+                const response = await fetch('http://localhost:8000/api/start', { method: 'POST' });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                await fetchBotStatus();
+            } catch (error) {
+                console.error('Error starting bot:', error);
+            }
+        }
+
+        async function stopBot() {
+            try {
+                const response = await fetch('http://localhost:8000/api/stop', { method: 'POST' });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                await fetchBotStatus();
+            } catch (error) {
+                console.error('Error stopping bot:', error);
+            }
+        }
+
+        async function setStrategy() {
+            try {
+                const strategySelect = document.getElementById('strategy-select');
+                const strategy = strategySelect.value;
+                const response = await fetch('http://localhost:8000/api/set_strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy })
+                });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                await fetchBalanceAndStrategy();
+            } catch (error) {
+                console.error('Error setting strategy:', error);
             }
         }
 
@@ -102,7 +168,13 @@
             await fetchBalanceAndStrategy();
             await fetchMarketData();
             await fetchLogs();
+            await fetchBotStatus();
         }
+
+        // Event listeners za dugmad
+        document.getElementById('start-bot').addEventListener('click', startBot);
+        document.getElementById('stop-bot').addEventListener('click', stopBot);
+        document.getElementById('set-strategy').addEventListener('click', setStrategy);
 
         // Inicijalno učitavanje
         updateUIFromRest();
