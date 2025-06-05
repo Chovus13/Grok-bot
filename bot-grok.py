@@ -464,7 +464,8 @@ class ChovusSmartBot:
     async def stream_order_book(self, symbol: str):
         try:
             symbol = symbol.replace('/', '').lower()  # Pretvori ETH/BTC u ethbtc
-            uri = f"wss://papi.binance.com/ws/{symbol}@depth20@100ms"  # PAPI WebSocket za order book
+            # Koristi PAPI WebSocket endpoint za Portfolio Margin
+            uri = f"wss://papi.binance.com/ws/{symbol}@depth20@100ms"
             async with websockets.connect(uri) as websocket:
                 while self.running:
                     message = await websocket.recv()
@@ -485,6 +486,27 @@ class ChovusSmartBot:
             logger.error(f"Error in WebSocket stream for {symbol}: {str(e)}")
             self.order_book = {"bids": {}, "asks": {}, "lastUpdateId": 0}
 
+    async def stream_balance(self):
+        try:
+            # PAPI WebSocket za balans (koristi user data stream)
+            uri = "wss://papi.binance.com/ws"  # User data stream zahteva listenKey
+            listen_key = await self.exchange.papi_post_listen_key()
+            uri = f"wss://papi.binance.com/ws/{listen_key['listenKey']}"
+            async with websockets.connect(uri) as websocket:
+                while self.running:
+                    message = await websocket.recv()
+                    data = json.loads(message)
+                    if data['e'] == 'balanceUpdate':
+                        available_balance = float(data['B'][0].get('wb', 0))  # 'wb' je available balance
+                        total_balance = float(data['B'][0].get('cw', 0))  # 'cw' je total balance
+                        set_config("balance", str(available_balance))
+                        set_config("total_balance", str(total_balance))
+                        logger.info(
+                            f"Updated balance via WebSocket: {available_balance} USDT | Total: {total_balance} USDT")
+                    await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Error in WebSocket stream for balance: {str(e)}")
+
     async def start_bot(self):
         self.running = True
         await self.set_position_mode(False)  # One-way mod
@@ -494,8 +516,9 @@ class ChovusSmartBot:
         await self.fetch_positions()
         await self.fetch_position_mode()
         self._bot_task = asyncio.create_task(self.run())
-        # Pokreni WebSocket stream za ETH/BTC
         asyncio.create_task(self.stream_order_book("ETH/BTC"))
+        # Dodaj WebSocket stream za balans
+        asyncio.create_task(self.stream_balance())
         logger.info("Bot started")
 
     def set_leverage(self, leverage: int, symbol: str = None):
