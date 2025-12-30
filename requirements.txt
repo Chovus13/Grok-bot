@@ -10,7 +10,9 @@ ccxt>=4.4.86
 Jinja2>=3.1.6
 schedule>=1.2.2
 pyyaml
-websockets
+websockets>=15.0.1
 asyncio
 requests==2.32.3
 python-telegram-bot>=22.1
+aiofiles>=24.1.0
+aiosqlite>=0.21.0

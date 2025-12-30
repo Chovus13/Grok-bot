@@ -1,4 +1,3 @@
-<!-- html/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,21 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PsyBot Control Panel</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Dodaj FontAwesome za ikonice -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4; display: flex; flex-direction: column; min-height: 100vh; }
-        header { background-color: #333; color: white; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #1a1a1a; color: #e0e0e0; display: flex; flex-direction: column; min-height: 100vh; }
+        header { background-color: #2c2c2c; color: #e0e0e0; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
         header h1 { margin: 0; font-size: 24px; }
         #latency { font-size: 14px; }
         .container { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
         .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
         .controls button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
         .controls button:hover { background-color: #0056b3; }
-        .controls input, .controls select { padding: 8px; border-radius: 5px; border: 1px solid #ccc; }
-        .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; background-color: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .controls input, .controls select { padding: 8px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; }
+        .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; background-color: #2c2c2c; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
         .status div { font-size: 16px; }
-        .chart-container { background-color: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); height: 300px; }
-        .signals, .candidates, .logs { background-color: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-height: 200px; overflow-y: auto; }
-        footer { background-color: #333; color: white; padding: 10px; text-align: center; font-size: 14px; }
+        .chart-container { background-color: #2c2c2c; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); height: 300px; }
+        .trades, .candidates, .signals, .logs, .positions { background-color: #2c2c2c; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); max-height: 200px; overflow-y: auto; }
+        .candidate-list { background-color: #2c2c2c; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+        .candidate-list p { margin: 5px 0; }
+        .order-book { background-color: #2c2c2c; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); display: flex; justify-content: space-between; }
+        .order-book div { width: 45%; }
+        .order-book p { margin: 5px 0; }
+        footer { background-color: #2c2c2c; color: #e0e0e0; padding: 10px; text-align: center; font-size: 14px; }
+        .strategy-option { display: flex; align-items: center; gap: 5px; }
         @media (max-width: 768px) { .container { padding: 10px; } .status { grid-template-columns: 1fr; } .chart-container { height: 200px; } }
     </style>
 </head>
@@ -37,14 +44,14 @@
         <button onclick="restartBot()">Restart Bot</button>
         <label for="strategySelect">Izaberi strategiju:</label>
         <select id="strategySelect">
-            <option value="RSI">RSI</option>
-            <option value="SMA">SMA</option>
-            <option value="DCA">DCA</option>
-            <option value="Default">Default</option>
+            <option value="RSI" class="strategy-option"><i class="fas fa-chart-line"></i> RSI</option>
+            <option value="SMA" class="strategy-option"><i class="fas fa-chart-area"></i> SMA</option>
+            <option value="DCA" class="strategy-option"><i class="fas fa-coins"></i> DCA</option>
+            <option value="Default" class="strategy-option"><i class="fas fa-cog"></i> Default</option>
         </select>
         <button onclick="setStrategyFromSelect()">⚙️ Primeni strategiju</button>
         <label for="leverageInput">Leverage:</label>
-        <input type="number" id="leverageInput" min="1" max="100" value="10">
+        <input type="number" id="leverageInput" min="1" max="100" value="3">
         <button onclick="setLeverage()">Set Leverage</button>
         <label for="amountInput">Manual Amount (USDT):</label>
         <input type="number" id="amountInput" min="0" step="0.01" value="0">
@@ -55,13 +62,20 @@
         <div>Price: <span id="price">N/A</span> ETH/BTC</div>
         <div>Support: <span id="support">0</span></div>
         <div>Resistance: <span id="resistance">0</span></div>
+        <div>Bid Wall: <span id="bid_wall">0</span></div>
+        <div>Ask Wall: <span id="ask_wall">0</span></div>
         <div>Trend: <span id="trend">N/A</span></div>
-        <div>Balance: <span id="balance">N/A</span> <span id="balanceCurrency">USDT</span></div>
+        <div>Available Balance: <span id="balance">N/A</span> <span id="balanceCurrency">USDT</span></div>
+        <div>Total Balance: <span id="totalBalance">N/A</span> USDT</div>
         <div>Strategija: <span id="strategija">off</span></div>
-        <div>Leverage: <span id="leverage">10x</span></div>
+        <div>Leverage: <span id="leverage">3x</span></div>
+        <div>Position Mode: <span id="positionMode">N/A</span></div>
     </div>
     <div class="trades" id="trades">
         <p>Aktivni trejdovi: Nema</p>
+    </div>
+    <div class="positions" id="positions">
+        <p>Pozicije: Nema</p>
     </div>
     <div class="candidates" id="candidates">
         <p>Kandidati za trejd: Nema</p>
@@ -76,6 +90,19 @@
 <div class="chart-container">
     <canvas id="orderbookChart"></canvas>
 </div>
+<div class="candidate-list" id="candidateList">
+    <p>Top 10 kandidata: Nema</p>
+</div>
+<div class="order-book" id="orderBook">
+    <div>
+        <h3>Bids (ETH/BTC)</h3>
+        <div id="bids"></div>
+    </div>
+    <div>
+        <h3>Asks (ETH/BTC)</h3>
+        <div id="asks"></div>
+    </div>
+</div>
 <footer>
     <p>Bot Status: <span id="botStatus">Disconnected</span> | Latest Signal: <span id="latestSignal">N/A</span></p>
 </footer>
@@ -83,6 +110,7 @@
 <script>
     const statusDiv = document.getElementById('status');
     let chart = null;
+    let scoresData = {};
 
     async function sendCommand(endpoint, method = 'GET', body = null) {
         const options = { method: method };
@@ -115,14 +143,48 @@
         }
     }
 
-    async function fetchBalanceAndStrategy() {
+      async function fetchBalanceAndStrategy() {
         try {
             const balanceResponse = await fetch('/api/balance');
             const balanceData = await balanceResponse.json();
             document.getElementById('balance').textContent = parseFloat(balanceData.wallet_balance).toFixed(2);
-            document.getElementById('leverage').textContent = `${get_config('leverage', '10')}x`;
+            document.getElementById('totalBalance').textContent = parseFloat(balanceData.total_balance).toFixed(2);
+            document.getElementById('leverage').textContent = `${get_config('leverage', '3')}x`;
         } catch (error) {
             console.error('Error fetching balance or leverage:', error);
+            document.getElementById('balance').textContent = '0.00';
+            document.getElementById('totalBalance').textContent = '0.00';
+        }
+    }
+    setInterval(fetchBalanceAndStrategy, 5000);  // Ažuriraj svakih 5 sekundi
+    fetchBalanceAndStrategy();
+
+    async function fetchPositions() {
+        try {
+            const response = await fetch('/api/positions');
+            const positions = await response.json();
+            const positionsDiv = document.getElementById('positions');
+            if (positions.length > 0) {
+                positionsDiv.innerHTML = '<h3>Trenutne pozicije:</h3>' + positions.map(pos => `
+                    <p>Symbol: ${pos.symbol} | Entry Price: ${parseFloat(pos.entryPrice).toFixed(4)} | Position Amt: ${parseFloat(pos.positionAmt).toFixed(4)} | Margin Type: ${pos.isolated ? 'Isolated' : 'Cross'}</p>
+                `).join('');
+            } else {
+                positionsDiv.innerHTML = '<p>Nema aktivnih pozicija.</p>';
+            }
+        } catch (error) {
+            console.error('Error fetching positions:', error);
+            positionsDiv.innerHTML = '<p>Greška pri učitavanju pozicija.</p>';
+        }
+    }
+
+    async function fetchPositionMode() {
+        try {
+            const response = await fetch('/api/position_mode');
+            const data = await response.json();
+            document.getElementById('positionMode').textContent = data.mode;
+        } catch (error) {
+            console.error('Error fetching position mode:', error);
+            document.getElementById('positionMode').textContent = 'Error';
         }
     }
 
@@ -144,19 +206,24 @@
         }
     }
 
-    async function fetchMarketData() {
-        try {
-            const response = await fetch('/api/market_data?symbol=ETH/BTC');
-            const data = await response.json();
-            document.getElementById('price').textContent = parseFloat(data.price).toFixed(4);
-            document.getElementById('support').textContent = parseFloat(data.support).toFixed(4);
-            document.getElementById('resistance').textContent = parseFloat(data.resistance).toFixed(4);
-            document.getElementById('trend').textContent = data.trend;
-            updateChart(data);
-        } catch (error) {
-            console.error('Error fetching market data:', error);
+            async function fetchMarketData() {
+            try {
+                const response = await fetch('/api/market_data');
+                const data = await response.json();
+                document.getElementById('price').textContent = parseFloat(data.price).toFixed(4);
+                document.getElementById('support').textContent = parseFloat(data.support).toFixed(4);
+                document.getElementById('resistance').textContent = parseFloat(data.resistance).toFixed(4);
+                document.getElementById('bidWall').textContent = parseFloat(data.bid_wall).toFixed(4);
+                document.getElementById('askWall').textContent = parseFloat(data.ask_wall).toFixed(4);
+                document.getElementById('trend').textContent = data.trend || 'N/A';
+            } catch (error) {
+                console.error('Error fetching market data:', error);
+            }
         }
-    }
+
+        // Ažuriraj podatke svakih 5 sekundi
+        setInterval(fetchMarketData, 5000);
+        fetchMarketData();
 
     async function fetchCandidates() {
         try {
@@ -168,7 +235,23 @@
                     <p><strong>${c.symbol}</strong> | Cena: ${parseFloat(c.price).toFixed(4)} | Score: ${parseFloat(c.score).toFixed(2)}</p>
                 `).join('');
             } else {
-                candidatesDiv.innerHTML = '<p>Nema kandidata za trejd.</p>';
+                const scanningResponse = await fetch('/api/scanning_status');
+                const scanningStatus = await scanningResponse.json();
+                candidatesDiv.innerHTML = '<h3>Status skeniranja:</h3>' + scanningStatus.map(s => `
+                    <p><strong>${s.symbol}</strong> | ${s.status}</p>
+                `).join('');
+            }
+
+            const candidateListDiv = document.getElementById('candidateList');
+            if (candidates.length > 0) {
+                candidateListDiv.innerHTML = '<h3>Top 10 kandidata:</h3>' + candidates.slice(0, 10).map(c => {
+                    scoresData[c.symbol] = scoresData[c.symbol] || [];
+                    scoresData[c.symbol].push({ x: Date.now(), y: c.score });
+                    if (scoresData[c.symbol].length > 50) scoresData[c.symbol].shift();
+                    return `<p><strong>${c.symbol}</strong> | Score: ${parseFloat(c.score).toFixed(2)}</p>`;
+                }).join('');
+            } else {
+                candidateListDiv.innerHTML = '<p>Top 10 kandidata: Nema</p>';
             }
         } catch (error) {
             console.error('Error fetching candidates:', error);
@@ -176,25 +259,44 @@
         }
     }
 
-async function fetchSignals() {
-    try {
-        const response = await fetch('/api/signals');
-        const signals = await response.json();
-        const signalsDiv = document.getElementById('signals');
-        if (signals.length > 0 && signals[0].symbol !== "N/A") {
-            signalsDiv.innerHTML = '<h3>Signali:</h3>' + signals.map(s => `
-                <p><strong>${s.symbol}</strong> | Cena: ${parseFloat(s.price).toFixed(4)} | Vreme: ${s.time} | Tip: ${s.type}</p>
-            `).join('');
-            document.getElementById('latestSignal').textContent = `${signals[0].symbol} @ ${parseFloat(signals[0].price).toFixed(4)} (${signals[0].type})`;
-        } else {
-            signalsDiv.innerHTML = '<p>Nema signala.</p>';
-            document.getElementById('latestSignal').textContent = 'N/A';
+    async function fetchSignals() {
+        try {
+            const response = await fetch('/api/signals');
+            const signals = await response.json();
+            const signalsDiv = document.getElementById('signals');
+            if (signals.length > 0 && signals[0].symbol !== "N/A") {
+                signalsDiv.innerHTML = '<h3>Signali:</h3>' + signals.map(s => `
+                    <p><strong>${s.symbol}</strong> | Cena: ${parseFloat(s.price).toFixed(4)} | Vreme: ${s.time} | Tip: ${s.type}</p>
+                `).join('');
+                document.getElementById('latestSignal').textContent = `${signals[0].symbol} @ ${parseFloat(signals[0].price).toFixed(4)} (${signals[0].type})`;
+            } else {
+                signalsDiv.innerHTML = '<p>Nema signala.</p>';
+                document.getElementById('latestSignal').textContent = 'N/A';
+            }
+        } catch (error) {
+            console.error('Error fetching signals:', error);
+            signalsDiv.innerHTML = '<p>Greška pri učitavanju signala.</p>';
         }
-    } catch (error) {
-        console.error('Error fetching signals:', error);
-        signalsDiv.innerHTML = '<p>Greška pri učitavanju signala.</p>';
     }
-}
+
+    async function fetchOrderBook() {
+        try {
+            const response = await fetch('/api/order_book');
+            const orderBook = await response.json();
+            const bidsDiv = document.getElementById('bids');
+            const asksDiv = document.getElementById('asks');
+            bidsDiv.innerHTML = orderBook.bids.map(bid => `
+                <p>Price: ${bid[0].toFixed(4)} | Amount: ${bid[1].toFixed(4)}</p>
+            `).join('');
+            asksDiv.innerHTML = orderBook.asks.map(ask => `
+                <p>Price: ${ask[0].toFixed(4)} | Amount: ${ask[1].toFixed(4)}</p>
+            `).join('');
+        } catch (error) {
+            console.error('Error fetching order book:', error);
+            document.getElementById('bids').innerHTML = '<p>Greška pri učitavanju bids.</p>';
+            document.getElementById('asks').innerHTML = '<p>Greška pri učitavanju asks.</p>';
+        }
+    }
 
     async function fetchLogs() {
         try {
@@ -237,17 +339,24 @@ async function fetchSignals() {
             type: 'line',
             data: {
                 datasets: [
-                    { label: 'Price', data: [], borderColor: 'blue', fill: false },
+                    { label: 'Price', data: [], borderColor: 'cyan', fill: false },
                     { label: 'Support', data: [], borderColor: 'green', fill: false, stepped: true },
-                    { label: 'Resistance', data: [], borderColor: 'red', fill: false, stepped: true }
+                    { label: 'Resistance', data: [], borderColor: 'red', fill: false, stepped: true },
+                    { label: 'Bid Wall', data: [], borderColor: '#00ffcc', fill: false, stepped: true },
+                    { label: 'Ask Wall', data: [], borderColor: '#ff00cc', fill: false, stepped: true },
+                    { label: 'Score (BTC/USDT)', data: [], borderColor: 'yellow', fill: false, borderDash: [5, 5] },
+                    { label: 'Score (ETH/USDT)', data: [], borderColor: 'orange', fill: false, borderDash: [5, 5] }
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: { type: 'linear', position: 'bottom', title: { display: true, text: 'Time' } },
-                    y: { title: { display: true, text: 'Price' } }
+                    x: { type: 'linear', position: 'bottom', title: { display: true, text: 'Time', color: '#e0e0e0' }, ticks: { color: '#e0e0e0' } },
+                    y: { title: { display: true, text: 'Price / Score', color: '#e0e0e0' }, ticks: { color: '#e0e0e0' } }
+                },
+                plugins: {
+                    legend: { labels: { color: '#e0e0e0' } }
                 }
             }
         });
@@ -258,8 +367,17 @@ async function fetchSignals() {
         chart.data.datasets[0].data.push({ x: now, y: data.price });
         chart.data.datasets[1].data.push({ x: now, y: data.support });
         chart.data.datasets[2].data.push({ x: now, y: data.resistance });
+        chart.data.datasets[3].data.push({ x: now, y: data.bid_wall });
+        chart.data.datasets[4].data.push({ x: now, y: data.ask_wall });
+
+        chart.data.datasets[5].data = scoresData['BTC/USDT'] || [];
+        chart.data.datasets[6].data = scoresData['ETH/USDT'] || [];
+
         if (chart.data.datasets[0].data.length > 50) {
-            chart.data.datasets.forEach(dataset => dataset.data.shift());
+            chart.data.datasets.forEach(dataset => {
+                if (dataset.label.includes('Score')) return;
+                dataset.data.shift();
+            });
         }
         chart.update();
     }
@@ -267,11 +385,14 @@ async function fetchSignals() {
     async function updateUIFromRest() {
         await fetchStatus();
         await fetchBalanceAndStrategy();
+        await fetchPositions();
+        await fetchPositionMode();
         await fetchTrades();
         await fetchMarketData();
         await fetchCandidates();
         await fetchSignals();
         await fetchLogs();
+        await fetchOrderBook();
     }
 
     function updateLatency() {
